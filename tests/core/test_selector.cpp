@@ -85,3 +85,19 @@ TEST_CASE("rejects malformed input") {
     CHECK_THROWS_AS(ParseElementMatcher(L"Grid[Tag]"), ParseError);
     CHECK_THROWS_AS(ParseElementMatcher(L"Grid[=X]"), ParseError);
 }
+
+TEST_CASE("splits without spaces around the separator") {
+    auto parts = ParseSelector(L"Grid#RootGrid>Rectangle");
+    REQUIRE(parts.size() == 2);
+    CHECK(parts[0].name == L"RootGrid");
+    CHECK(parts[1].type == L"Rectangle");
+}
+
+TEST_CASE("does not split on '>' inside a property filter") {
+    auto parts = ParseSelector(L"Grid[Tag=A>B] > Rectangle");
+    REQUIRE(parts.size() == 2);
+    CHECK(parts[0].type == L"Grid");
+    REQUIRE(parts[0].property_filters.size() == 1);
+    CHECK(parts[0].property_filters[0].second == L"A>B");
+    CHECK(parts[1].type == L"Rectangle");
+}
