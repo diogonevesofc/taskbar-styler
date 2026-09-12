@@ -318,6 +318,19 @@ def cmd_roundtrip(args: argparse.Namespace) -> int:
     text = Path(args.source).read_text(encoding="utf-8", errors="replace")
     tables = parse_source(text)
 
+    # Same reasoning as cmd_convert's guard: THEME_START depends on exact
+    # upstream formatting, so a silent reformat (or a stray missed table)
+    # would make parse_source find fewer tables. Without this check, the
+    # round-trip - the one command whose entire job is being the fidelity
+    # proof - would report "OK" having verified zero or a partial set,
+    # which is worse than not running it at all.
+    if args.expect_count >= 0 and len(tables) != args.expect_count:
+        print(
+            f"error: expected {args.expect_count} theme tables, "
+            f"found {len(tables)} - upstream formatting may have changed",
+        )
+        return 1
+
     failures = 0
     for name, table in tables.items():
         start, end = table.span
@@ -398,6 +411,10 @@ def main() -> int:
     p = sub.add_parser("roundtrip",
                        help="proves the conversion is lossless")
     p.add_argument("--source", required=True)
+    p.add_argument(
+        "--expect-count", type=int, default=55,
+        help="fail if the number of parsed theme tables differs from this "
+             "(default: 55); pass a negative number to disable the check")
     p.set_defaults(func=cmd_roundtrip)
 
     args = parser.parse_args()

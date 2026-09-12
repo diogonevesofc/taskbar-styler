@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Extractor tests. Run with: python -m pytest tools/ -q"""
+import argparse
 from pathlib import Path
 
 import extract_themes as ex
@@ -218,6 +219,53 @@ def test_roundtrip_of_every_real_theme():
     for name, table in tables.items():
         start, end = table.span
         assert ex.emit_theme_table(name, table) == text[start:end], name
+
+
+def test_escape_wide_pins_non_ascii_as_uppercase_uxxxx():
+    """Pins the measured escape rule hermetically, independent of
+    vendor/ being present or unchanged: escape `\\` as `\\\\`, `"` as
+    `\\"`, and every character above U+007F as `\\u` followed by exactly
+    4 UPPERCASE hex digits - nothing else takes this escape form. This
+    must fail if the escaper ever switches to lowercase hex or to a
+    different escape form (e.g. surrogate pairs, decimal codepoints)."""
+    assert ex._escape_wide(chr(0xE971)) == "\\uE971"
+    assert ex._escape_wide(chr(0x00FF)) == "\\u00FF"
+    assert ex._escape_wide("\\") == "\\\\"
+    assert ex._escape_wide('"') == '\\"'
+    assert ex._escape_wide("plain") == "plain"
+
+
+def test_roundtrip_guard_rejects_a_wrong_table_count(tmp_path, capsys):
+    """cmd_roundtrip must fail loudly - and BEFORE printing an 'OK' line -
+    when it parses a different number of tables than expected, mirroring
+    cmd_convert's guard. Without this, the round-trip command (the
+    fidelity proof's whole point) can report success having verified an
+    empty or partial set, e.g. after a silent upstream reformat that
+    THEME_START no longer matches."""
+    mangled = SAMPLE.replace("const Theme g_theme", "static const Theme g_theme")
+    src = tmp_path / "mangled.cpp"
+    src.write_text(mangled, encoding="utf-8")
+
+    args = argparse.Namespace(source=str(src), expect_count=1)
+    rc = ex.cmd_roundtrip(args)
+    out = capsys.readouterr().out
+
+    assert rc == 1
+    assert "expected 1" in out
+    assert "found 0" in out
+    assert "OK" not in out
+
+
+def test_roundtrip_guard_can_be_disabled_with_a_negative_count(tmp_path, capsys):
+    src = tmp_path / "sample.cpp"
+    src.write_text(SAMPLE, encoding="utf-8")
+
+    args = argparse.Namespace(source=str(src), expect_count=-1)
+    rc = ex.cmd_roundtrip(args)
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "OK: 1 themes reconstructed byte for byte" in out
 
 
 def test_real_source_has_55_tables_and_54_selectable_ids():
