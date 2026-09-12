@@ -4,19 +4,10 @@
 #include <charconv>
 #include <string>
 
+#include "detail/text.h"
+
 namespace styler {
 namespace {
-
-constexpr std::wstring_view kWhitespace = L" \t\r\n";
-
-std::wstring_view Trim(std::wstring_view s) {
-    auto first = s.find_first_not_of(kWhitespace);
-    if (first == std::wstring_view::npos) {
-        return {};
-    }
-    auto last = s.find_last_not_of(kWhitespace);
-    return s.substr(first, last - first + 1);
-}
 
 int ParseIndex(std::wstring_view s) {
     int value = 0;
@@ -31,7 +22,7 @@ int ParseIndex(std::wstring_view s) {
 ElementMatcher ParseElementMatcher(std::wstring_view str) {
     ElementMatcher result;
 
-    auto trimmed = Trim(str);
+    auto trimmed = detail::Trim(str);
     if (trimmed == L"*") {
         result.kind = ElementMatcher::Kind::Wildcard;
         return result;
@@ -42,7 +33,7 @@ ElementMatcher ParseElementMatcher(std::wstring_view str) {
     }
 
     auto i = trimmed.find_first_of(L"#@[");
-    result.type = Trim(trimmed.substr(0, i));
+    result.type = detail::Trim(trimmed.substr(0, i));
     if (result.type.empty()) {
         throw ParseError("Bad target syntax, empty type");
     }
@@ -57,7 +48,7 @@ ElementMatcher ParseElementMatcher(std::wstring_view str) {
                 if (!result.name.empty()) {
                     throw ParseError("Bad target syntax, more than one name");
                 }
-                result.name = Trim(part);
+                result.name = detail::Trim(part);
                 if (result.name.empty()) {
                     throw ParseError("Bad target syntax, empty name");
                 }
@@ -69,16 +60,16 @@ ElementMatcher ParseElementMatcher(std::wstring_view str) {
                     throw ParseError(
                         "Bad target syntax, more than one visual state group");
                 }
-                result.visual_state_group = std::wstring(Trim(part));
+                result.visual_state_group = std::wstring(detail::Trim(part));
                 break;
             }
 
             case L'[': {
-                auto rule = Trim(part);
+                auto rule = detail::Trim(part);
                 if (rule.empty() || rule.back() != L']') {
                     throw ParseError("Bad target syntax, missing ']'");
                 }
-                rule = Trim(rule.substr(0, rule.size() - 1));
+                rule = detail::Trim(rule.substr(0, rule.size() - 1));
                 if (rule.empty()) {
                     throw ParseError("Bad target syntax, empty property");
                 }
@@ -95,8 +86,8 @@ ElementMatcher ParseElementMatcher(std::wstring_view str) {
                         "Bad target syntax, missing '=' in property");
                 }
 
-                auto key = Trim(rule.substr(0, eq));
-                auto value = Trim(rule.substr(eq + 1));
+                auto key = detail::Trim(rule.substr(0, eq));
+                auto value = detail::Trim(rule.substr(eq + 1));
                 if (key.empty()) {
                     throw ParseError("Bad target syntax, empty property name");
                 }

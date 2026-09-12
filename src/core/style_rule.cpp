@@ -1,21 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <styler/style_rule.h>
 
+#include "detail/text.h"
+
 namespace styler {
-namespace {
-
-constexpr std::wstring_view kWhitespace = L" \t\r\n";
-
-std::wstring_view Trim(std::wstring_view s) {
-    auto first = s.find_first_not_of(kWhitespace);
-    if (first == std::wstring_view::npos) {
-        return {};
-    }
-    auto last = s.find_last_not_of(kWhitespace);
-    return s.substr(first, last - first + 1);
-}
-
-}  // namespace
 
 bool IsValidStyleVariableIdentifier(std::wstring_view name) {
     if (name.empty()) {
@@ -57,12 +45,12 @@ StyleRule ParseStyleRule(std::wstring_view str) {
                 "rule");
         }
 
-        auto property_name = Trim(name);
+        auto property_name = detail::Trim(name);
         if (property_name.empty()) {
             throw ParseError("Bad style syntax, empty name");
         }
 
-        auto var_name = Trim(value);
+        auto var_name = detail::Trim(value);
         if (var_name.empty()) {
             throw ParseError("Bad style syntax, empty capture variable name");
         }
@@ -75,7 +63,7 @@ StyleRule ParseStyleRule(std::wstring_view str) {
     }
 
     ValueRule result;
-    result.value = Trim(value);
+    result.value = detail::Trim(value);
 
     if (!name.empty() && name.back() == L':') {
         result.is_xaml_value = true;
@@ -84,11 +72,11 @@ StyleRule ParseStyleRule(std::wstring_view str) {
 
     auto at = name.find(L'@');
     if (at != std::wstring_view::npos) {
-        result.visual_state = Trim(name.substr(at + 1));
+        result.visual_state = detail::Trim(name.substr(at + 1));
         name = name.substr(0, at);
     }
 
-    result.property_name = Trim(name);
+    result.property_name = detail::Trim(name);
     if (result.property_name.empty()) {
         throw ParseError("Bad style syntax, empty name");
     }

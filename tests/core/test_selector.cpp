@@ -101,3 +101,9 @@ TEST_CASE("does not split on '>' inside a property filter") {
     CHECK(parts[0].property_filters[0].second == L"A>B");
     CHECK(parts[1].type == L"Rectangle");
 }
+
+TEST_CASE("trims vertical tab, matching upstream") {
+    auto m = ParseElementMatcher(L"\vGrid#Root\v");
+    CHECK(m.type == L"Grid");
+    CHECK(m.name == L"Root");
+}
