@@ -27,8 +27,8 @@ struct ThemeRule {
     // is empty even though the shipped JSON listed some). The rule stays in
     // `Theme::rules` either way - see theme_loader.h - so consumers MUST
     // check this flag before applying a rule rather than assuming a
-    // non-empty `rules` entry is always usable. `Theme::diagnostics` carries
-    // one human-readable line per rule this is set on.
+    // non-empty `rules` entry is always usable. A rule can also appear in
+    // `Theme::diagnostics` WITHOUT being dead - see that field's comment.
     bool dead = false;
 };
 
@@ -48,10 +48,14 @@ struct Theme {
     std::vector<ThemeRule> rules;
     std::optional<OsFeatureVariant> os_feature_variant;
 
-    // One human-readable line per rule the loader marked `dead`, naming the
-    // theme id, the offending target, and why - see theme_loader.h §"fails
-    // closed" exceptions. Empty for the overwhelming majority of themes;
-    // never silent when non-empty, per spec §7.6.
+    // One human-readable line per rule the loader dropped something from -
+    // naming the theme id, the offending target, and why - see
+    // theme_loader.h §"fails closed" exceptions. This is NOT the same set as
+    // rules with `ThemeRule::dead == true`: dropping one bad chain from a
+    // multi-chain target's selector logs a line here even though the rule
+    // survives with its remaining chains and `dead` stays false. A rule can
+    // carry a diagnostic without being dead. Empty for the overwhelming
+    // majority of themes; never silent when non-empty, per spec §7.6.
     std::vector<std::wstring> diagnostics;
 };
 

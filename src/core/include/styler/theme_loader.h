@@ -23,25 +23,32 @@ namespace styler {
 // discards just that one target's customization (see
 // AddElementCustomizationRules, vendor/upstream/...:18956) rather than
 // aborting the theme - unlike upstream, this loader never does it silently:
-// the rule is kept in `Theme::rules` with `ThemeRule::dead = true` and one
-// line describing why is appended to `Theme::diagnostics` (spec §7.6 requires
-// "não aplica ... e reporta"; consumers MUST check `dead` before applying a
-// rule):
-//   - an unparseable style entry (today: a literal empty string) mirrors
-//     upstream's ParseRule throwing "'=' is missing" - the WHOLE style list
-//     for that rule is discarded, not just the bad entry, because upstream's
-//     per-target catch discards everything already parsed for that target
-//     too;
+// one line describing why is appended to `Theme::diagnostics` (spec §7.6
+// requires "não aplica ... e reporta"). That diagnostics line does NOT imply
+// `ThemeRule::dead = true` - see the second bullet below and the field's own
+// comment; consumers MUST check `dead` before applying a rule regardless of
+// whether a diagnostic was logged for it:
+//   - an unparseable style entry (today: a literal empty string, exactly -
+//     NOT any string `ParseStyleRule` would reject; every other malformed
+//     style, e.g. one missing '=', still fails the whole theme closed, same
+//     as before this exception existed) mirrors upstream's ParseRule
+//     throwing "'=' is missing" - the WHOLE style list for that rule is
+//     discarded, not just the bad entry, because upstream's per-target
+//     catch discards everything already parsed for that target too. This
+//     always sets `dead = true` (a rule with no styles can never apply);
 //   - a selector chain with more than one `#Name` (AmbiguousMatcherError, a
 //     narrower ParseError) is dropped chain-by-chain by ParseSelectorGroups;
 //     sibling chains from the same comma-separated target still parse and
-//     still apply. Only when every chain of a target is bad does `selector`
-//     end up empty, meaning the rule matches nothing.
+//     still apply. This sets `dead = true` only when every chain of a
+//     target is bad, so `selector` ends up empty and the rule matches
+//     nothing. Dropping just one chain out of several still logs a
+//     diagnostic - the rule is not silently changed - but leaves `dead`
+//     false, since the surviving chain(s) still apply.
 // Either way the rule stays in `Theme::rules`, so the rule count some tools
 // rely on (see test_corpus.cpp) still reflects one entry per shipped
 // ThemeTargetStyles block. Every other malformed rule still fails the whole
 // theme closed, including every other selector error (empty type, unmatched
-// bracket, ...).
+// bracket, ...) and every other malformed style (missing '=', etc.).
 Theme LoadThemeFromJson(std::string_view utf8);
 
 Theme LoadThemeFromFile(const std::filesystem::path& path);

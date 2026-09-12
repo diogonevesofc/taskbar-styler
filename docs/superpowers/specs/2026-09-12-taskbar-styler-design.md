@@ -340,18 +340,23 @@ funcionam hoje. A resolução acontece na aplicação, não na carga.
 `AddElementCustomizationRules` (`vendor/upstream/...:18956`) do upstream envolve cada alvo em um
 try/catch próprio: uma regra malformada é descartada individualmente, o tema inteiro continua
 carregando. O core replica essa tolerância por regra — nunca por tema inteiro, nunca em silêncio:
-a regra permanece em `Theme::rules` (a contagem de regras continua íntegra) marcada
-`ThemeRule::dead = true`, e uma linha legível é anexada a `Theme::diagnostics` nomeando o tema, o
-alvo e o motivo. Consumidores da árvore de regras **devem** checar `dead` antes de aplicar
-qualquer regra.
+a regra permanece em `Theme::rules` (a contagem de regras continua íntegra) e uma linha legível é
+anexada a `Theme::diagnostics` nomeando o tema, o alvo e o motivo. Isso não implica
+`ThemeRule::dead = true` em todo caso — uma cadeia de seletor descartada de um alvo com várias
+(ver segunda exceção abaixo) gera diagnóstico mas deixa a regra viva, já que as cadeias restantes
+ainda casam. Consumidores da árvore de regras **devem** checar `dead` antes de aplicar qualquer
+regra, independentemente de ela ter gerado diagnóstico.
 
-- *Estilo não interpretável mata os estilos daquela regra.* Uma entrada de estilo vazia (ou,
-  mais geralmente, qualquer uma que `ParseRule`/`ParseStyleRule` rejeitaria) corresponde ao
-  upstream lançando `"'=' is missing"` (`vendor/upstream/...:18727`); o catch por alvo descarta
-  a customização inteira daquele alvo, inclusive estilos já interpretados antes do problemático.
-  O core espelha isso: zera `ThemeRule::styles` por completo, não só a entrada ruim. Nos dados
-  reais, os quatro `""` de `LiquidGlass2.json` são a única entrada de estilo da própria regra —
-  coincidência dos dados, não da regra.
+- *Uma entrada de estilo literalmente vazia (`""`) mata os estilos daquela regra.* Essa string
+  exata — não "qualquer entrada malformada" — corresponde ao upstream lançando
+  `"'=' is missing"` (`vendor/upstream/...:18727`); o catch por alvo descarta a customização
+  inteira daquele alvo, inclusive estilos já interpretados antes do problemático. O core
+  espelha isso: zera `ThemeRule::styles` por completo, não só a entrada vazia. Nos dados reais,
+  os quatro `""` de `LiquidGlass2.json` são a única entrada de estilo da própria regra —
+  coincidência dos dados, não da regra. **Qualquer outra entrada malformada (sem `=`, tipo
+  errado, etc.) continua falhando o tema inteiro fechado**, exatamente como antes desta
+  exceção existir — a tolerância aqui é estreita de propósito, não uma reinterpretação geral
+  de "o que `ParseStyleRule` rejeitaria".
 - *Uma cadeia de seletor inválida é descartada.* Um alvo separado por vírgulas vira múltiplas
   cadeias alternativas (`SplitTargetString`/`ParseSelectorGroups`); se uma cadeia específica é
   ambígua (dois `#Nome` colados sem `>` entre eles — um bug de autoria real do

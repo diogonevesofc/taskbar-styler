@@ -103,6 +103,18 @@ TEST_CASE("an empty style string kills the whole rule's styles and marks it dead
     CHECK(theme.diagnostics[0].find(L"Grid") != std::wstring::npos);
 }
 
+// The empty-style tolerance above `break`s out of the styles loop as soon as
+// it hits the empty entry. That must not skip type-checking whatever comes
+// after it in the JSON array - a non-string entry past the empty one still
+// has to fail the whole theme closed, exactly as it would if it appeared
+// before the empty entry instead.
+TEST_CASE("a non-string style entry after an empty one still fails the theme closed") {
+    CHECK_THROWS_AS(LoadThemeFromJson(R"({
+      "id": "T", "name": "T",
+      "rules": [ { "target": "Grid", "styles": ["", 42] } ]
+    })"), ParseError);
+}
+
 // Mirrors upstream's own AddElementCustomizationRules (vendor/upstream/...:
 // 18956), which catches a bad target's selector error and discards just
 // that target's customization rather than the whole theme. LiquidGlass2

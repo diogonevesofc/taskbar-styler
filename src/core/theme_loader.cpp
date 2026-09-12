@@ -93,7 +93,12 @@ Theme LoadThemeFromJson(std::string_view utf8) {
             auto chain_count = SplitTargetString(rule.target).size();
             rule.selector = ParseSelectorGroups(rule.target);
             if (rule.selector.size() < chain_count) {
-                rule.dead = rule.selector.empty();
+                // |=, not =: the styles loop below can already have set
+                // `dead` (an empty style entry). Using = here would silently
+                // un-kill that rule if this selector block ever ran after
+                // it - harmless today only because of the fixed order of
+                // the two blocks.
+                rule.dead |= rule.selector.empty();
                 theme.diagnostics.push_back(
                     L"theme " + theme.id + L": target '" + rule.target +
                     L"' - " +
@@ -111,10 +116,17 @@ Theme LoadThemeFromJson(std::string_view utf8) {
         if (styles_it == entry.end() || !styles_it->is_array()) {
             throw ParseError("Missing or non-array field: styles");
         }
+        // Validate every entry's type up front, before processing any of
+        // them: the loop below can `break` early once it hits an empty
+        // style string (see the comment there), which must not let a
+        // malformed entry AFTER the break - e.g. {"styles": ["", 42]} -
+        // load silently instead of failing the theme closed.
         for (const auto& s : *styles_it) {
             if (!s.is_string()) {
                 throw ParseError("Style entry is not a string");
             }
+        }
+        for (const auto& s : *styles_it) {
             auto raw = s.get<std::string>();
             // A handful of shipped rules (e.g. LiquidGlass2's #DisplayName
             // and #Iconlmage targets) carry a literal empty style string in
