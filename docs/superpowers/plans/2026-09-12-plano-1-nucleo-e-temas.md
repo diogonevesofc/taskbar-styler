@@ -1021,11 +1021,29 @@ TEST_CASE("fails closed on malformed input") {
       "rules": [ { "target": "Grid", "styles": ["NoEquals"] } ] })"), ParseError);
 }
 
-TEST_CASE("rejects a style referencing an undefined constant") {
-    CHECK_THROWS_AS(LoadThemeFromJson(R"({
+// O carregador NAO valida resolucao de constante. O upstream
+// (ApplyStyleConstants, vendor/upstream/...:17958) substitui `$Nome` por
+// prefixo em qualquer posicao do valor e deixa `$` sem correspondencia passar
+// como literal. Nos dados reais, 85 referencias sao embutidas no meio do valor
+// e 10 nao resolvem contra constante alguma — lancar aqui rejeitaria os temas
+// Luminosity_variant_Dock, Luminosity_variant_Compact e Fluid. A resolucao
+// pertence ao TAP, no Plano 2.
+TEST_CASE("accepts an unresolved constant reference, like upstream does") {
+    auto theme = LoadThemeFromJson(R"({
       "id": "T", "name": "T",
       "rules": [ { "target": "Grid", "styles": ["Fill:=$Missing"] } ]
-    })"), ParseError);
+    })");
+    REQUIRE(theme.rules.size() == 1);
+    CHECK(std::get<ValueRule>(theme.rules[0].styles[0]).value == L"$Missing");
+}
+
+TEST_CASE("accepts a constant embedded mid-value") {
+    auto theme = LoadThemeFromJson(R"({
+      "id": "T", "name": "T",
+      "constants": { "Gap": "8" },
+      "rules": [ { "target": "Grid", "styles": ["Margin=0,0,$Gap,0"] } ]
+    })");
+    CHECK(std::get<ValueRule>(theme.rules[0].styles[0]).value == L"0,0,$Gap,0");
 }
 ```
 
@@ -1215,8 +1233,14 @@ struct Theme {
 
 namespace styler {
 
-// Parses and fully validates a theme. Throws ParseError on any problem:
-// a partially applied theme is worse than none, so loading fails closed.
+// Parses a theme and validates what can be validated statically: the JSON
+// shape, every selector, and every style rule. Throws ParseError on any of
+// those — a half-parsed theme is worse than none, so loading fails closed.
+//
+// It deliberately does NOT validate `$Constant` references. Upstream resolves
+// them by prefix substitution anywhere in a value and lets an unmatched `$`
+// through as a literal; three shipped themes rely on that. Resolution happens
+// at apply time, not load time.
 Theme LoadThemeFromJson(std::string_view utf8);
 
 Theme LoadThemeFromFile(const std::filesystem::path& path);
@@ -1273,27 +1297,6 @@ std::map<std::wstring, std::wstring> OptionalMap(const json& obj,
         out.emplace(Utf8ToWide(k), Utf8ToWide(v.get<std::string>()));
     }
     return out;
-}
-
-// Every `$Name` reference must resolve, or the theme would apply half-styled.
-void CheckConstantReferences(const Theme& theme) {
-    for (const auto& rule : theme.rules) {
-        for (const auto& style : rule.styles) {
-            const auto* value = std::get_if<ValueRule>(&style);
-            if (!value) {
-                continue;
-            }
-            if (value->value.empty() || value->value.front() != L'$') {
-                continue;
-            }
-            auto name = value->value.substr(1);
-            if (theme.constants.count(name) == 0 &&
-                theme.resource_variables.count(name) == 0) {
-                throw ParseError("Undefined constant referenced: " +
-                                 WideToUtf8(name));
-            }
-        }
-    }
 }
 
 }  // namespace
@@ -1359,7 +1362,6 @@ Theme LoadThemeFromJson(std::string_view utf8) {
         theme.os_feature_variant = std::move(variant);
     }
 
-    CheckConstantReferences(theme);
     return theme;
 }
 
@@ -1490,6 +1492,17 @@ def test_rejects_a_duplicated_constant():
     import pytest
     with pytest.raises(ValueError):
         ex.to_theme_json("Sample", tables["Sample"], "Sample", "")
+
+
+def test_sanitizes_the_filename_but_keeps_the_real_id():
+    assert ex.safe_filename("Oversimplified&Accentuated") == \
+        "Oversimplified_Accentuated"
+    assert ex.safe_filename("WinXP_variant_Zune") == "WinXP_variant_Zune"
+
+    tables = ex.parse_source(SAMPLE)
+    doc = ex.to_theme_json("Sample", tables["Sample"],
+                           "Oversimplified&Accentuated", "")
+    assert doc["id"] == "Oversimplified&Accentuated"
 
 
 def test_finds_selectable_ids_across_line_breaks():
@@ -1666,6 +1679,15 @@ def selectable_ids(text: str) -> dict[str, str]:
     return out
 
 
+def safe_filename(theme_id: str) -> str:
+    """Nome de arquivo seguro. O id verdadeiro vive no campo 'id' do JSON.
+
+    `Oversimplified&Accentuated` e um id real; o '&' e legal no Windows mas
+    atrapalha em shell e CI.
+    """
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", theme_id)
+
+
 def _split_pairs(entries: list[str]) -> dict[str, str]:
     out: dict[str, str] = {}
     for entry in entries:
@@ -1719,7 +1741,7 @@ def cmd_convert(args: argparse.Namespace) -> int:
     for name, table in tables.items():
         theme_id = ids.get(name, name.replace("_variant_", "_"))
         doc = to_theme_json(name, table, theme_id, credits.get(theme_id, ""))
-        path = out_dir / f"{theme_id}.json"
+        path = out_dir / f"{safe_filename(theme_id)}.json"
         path.write_text(
             json.dumps(doc, indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8")
@@ -1753,7 +1775,7 @@ if __name__ == "__main__":
 python -m pytest tools/ -q
 ```
 
-Esperado: 7 passed.
+Esperado: 8 passed.
 
 - [ ] **Step 5: Rodar contra o fonte real e conferir a contagem**
 
@@ -2012,8 +2034,12 @@ def fetch(theme_id: str) -> str:
 
 def main() -> int:
     themes_dir = Path("themes")
-    ids = sorted(p.stem for p in themes_dir.glob("*.json")
-                 if p.name != "credits.json")
+    # O nome do arquivo e sanitizado; o id verdadeiro vive dentro do JSON.
+    ids = sorted(
+        json.loads(p.read_text(encoding="utf-8"))["id"]
+        for p in themes_dir.glob("*.json")
+        if p.name != "credits.json"
+    )
 
     credits: dict[str, str] = {}
     for theme_id in ids:
