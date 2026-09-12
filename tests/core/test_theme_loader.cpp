@@ -42,10 +42,29 @@ TEST_CASE("loads constants, selectors and styles") {
 
     REQUIRE(theme.constants.count(L"Bg") == 1);
     REQUIRE(theme.rules.size() == 1);
-    CHECK(theme.rules[0].selector.size() == 2);
-    CHECK(theme.rules[0].selector[1].type == L"Rectangle");
+    REQUIRE(theme.rules[0].selector.size() == 1);
+    CHECK(theme.rules[0].selector[0].size() == 2);
+    CHECK(theme.rules[0].selector[0][1].type == L"Rectangle");
     REQUIRE(theme.rules[0].styles.size() == 1);
     CHECK(std::get<ValueRule>(theme.rules[0].styles[0]).is_xaml_value);
+}
+
+TEST_CASE("loads a comma-separated target as multiple selector chains") {
+    auto theme = LoadThemeFromJson(R"({
+      "id": "T", "name": "T",
+      "rules": [
+        { "target": "Grid#A > Rectangle, Grid#B > Border", "styles": ["Fill=Red"] }
+      ]
+    })");
+
+    REQUIRE(theme.rules.size() == 1);
+    REQUIRE(theme.rules[0].selector.size() == 2);
+    REQUIRE(theme.rules[0].selector[0].size() == 2);
+    CHECK(theme.rules[0].selector[0][0].name == L"A");
+    CHECK(theme.rules[0].selector[0][1].type == L"Rectangle");
+    REQUIRE(theme.rules[0].selector[1].size() == 2);
+    CHECK(theme.rules[0].selector[1][0].name == L"B");
+    CHECK(theme.rules[0].selector[1][1].type == L"Border");
 }
 
 TEST_CASE("loads the os feature variant") {
@@ -57,6 +76,39 @@ TEST_CASE("loads the os feature variant") {
     REQUIRE(theme.os_feature_variant.has_value());
     CHECK(theme.os_feature_variant->feature_id == 48660958u);
     CHECK(theme.os_feature_variant->theme_id == L"Squircle_WeatherOnTheRight");
+}
+
+// Upstream's own ParseRule (vendor/upstream/...:18727) throws on a style
+// with no '=', and AddElementCustomizationRules (vendor/upstream/...:18956)
+// catches that per target and discards its whole customization - the target
+// is already a no-op at runtime. A handful of shipped rules (LiquidGlass2's
+// #DisplayName and #Iconlmage targets) carry exactly this: a literal empty
+// style string. The loader skips it rather than failing the whole theme,
+// while every other malformed style (see below) still fails closed.
+TEST_CASE("skips a literal empty style string instead of failing the theme") {
+    auto theme = LoadThemeFromJson(R"({
+      "id": "T", "name": "T",
+      "rules": [ { "target": "Grid", "styles": [""] } ]
+    })");
+    REQUIRE(theme.rules.size() == 1);
+    CHECK(theme.rules[0].styles.empty());
+}
+
+// Mirrors upstream's own AddElementCustomizationRules (vendor/upstream/...:
+// 18956), which catches a bad target's selector error and discards just
+// that target's customization rather than the whole theme. LiquidGlass2
+// ships exactly this: two segments glued by a space instead of '>'.
+TEST_CASE("keeps a rule with an unparseable selector instead of failing the theme") {
+    auto theme = LoadThemeFromJson(R"({
+      "id": "T", "name": "T",
+      "rules": [
+        { "target": "Grid#A Grid#B", "styles": ["Fill=Red"] }
+      ]
+    })");
+    REQUIRE(theme.rules.size() == 1);
+    CHECK(theme.rules[0].target == L"Grid#A Grid#B");
+    CHECK(theme.rules[0].selector.empty());
+    REQUIRE(theme.rules[0].styles.size() == 1);
 }
 
 TEST_CASE("fails closed on malformed input") {
@@ -102,7 +154,8 @@ TEST_CASE("loads a theme from a file on disk") {
     CHECK(theme.name == L"Test Theme");
     REQUIRE(theme.constants.count(L"Bg") == 1);
     REQUIRE(theme.rules.size() == 1);
-    CHECK(theme.rules[0].selector.size() == 2);
+    REQUIRE(theme.rules[0].selector.size() == 1);
+    CHECK(theme.rules[0].selector[0].size() == 2);
     REQUIRE(theme.rules[0].styles.size() == 2);
     CHECK(std::get<ValueRule>(theme.rules[0].styles[0]).value == L"$Bg");
 }

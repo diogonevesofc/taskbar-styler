@@ -46,7 +46,8 @@ ElementMatcher ParseElementMatcher(std::wstring_view str) {
         switch (trimmed[i]) {
             case L'#': {
                 if (!result.name.empty()) {
-                    throw ParseError("Bad target syntax, more than one name");
+                    throw AmbiguousMatcherError(
+                        "Bad target syntax, more than one name");
                 }
                 result.name = detail::Trim(part);
                 if (result.name.empty()) {
@@ -142,6 +143,47 @@ std::vector<ElementMatcher> ParseSelector(std::wstring_view str) {
     }
 
     return parts;
+}
+
+std::vector<std::wstring_view> SplitTargetString(std::wstring_view target) {
+    std::vector<std::wstring_view> result;
+
+    size_t part_begin = 0;
+    bool in_property = false;
+    for (size_t i = 0; i < target.size(); ++i) {
+        switch (target[i]) {
+            case L'[':
+                in_property = true;
+                break;
+
+            case L']':
+                in_property = false;
+                break;
+
+            case L',':
+                if (!in_property) {
+                    result.push_back(target.substr(part_begin, i - part_begin));
+                    part_begin = i + 1;
+                }
+                break;
+
+            default:
+                break;
+        }
+    }
+
+    result.push_back(target.substr(part_begin));
+
+    return result;
+}
+
+std::vector<std::vector<ElementMatcher>> ParseSelectorGroups(
+    std::wstring_view str) {
+    std::vector<std::vector<ElementMatcher>> groups;
+    for (auto chain : SplitTargetString(str)) {
+        groups.push_back(ParseSelector(chain));
+    }
+    return groups;
 }
 
 }  // namespace styler

@@ -28,6 +28,16 @@ jobs:
           python tools/extract_themes.py roundtrip
           --source vendor/upstream/windows-11-taskbar-styler.wh.cpp
 
+      - name: Committed themes match source
+        shell: bash
+        run: |
+          rm -rf /tmp/themes-check
+          python tools/extract_themes.py convert \
+            --source vendor/upstream/windows-11-taskbar-styler.wh.cpp \
+            --out /tmp/themes-check --credits themes/credits.json
+          diff -rq --exclude=credits.json themes/ /tmp/themes-check/
+          echo "committed themes/ matches a fresh conversion from source"
+
       - name: Configure
         run: cmake -S . -B build -G Ninja
 

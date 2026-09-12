@@ -7,6 +7,8 @@ using styler::ElementMatcher;
 using styler::ParseElementMatcher;
 using styler::ParseError;
 using styler::ParseSelector;
+using styler::ParseSelectorGroups;
+using styler::SplitTargetString;
 
 TEST_CASE("parses a bare type") {
     auto m = ParseElementMatcher(L"Grid");
@@ -106,4 +108,42 @@ TEST_CASE("trims vertical tab, matching upstream") {
     auto m = ParseElementMatcher(L"\vGrid#Root\v");
     CHECK(m.type == L"Grid");
     CHECK(m.name == L"Root");
+}
+
+TEST_CASE("splits a target string on top-level commas") {
+    auto parts = SplitTargetString(
+        L"ParentClass > Class#Name1, ParentClass > Class#Name2");
+    REQUIRE(parts.size() == 2);
+    CHECK(parts[0] == L"ParentClass > Class#Name1");
+    CHECK(parts[1] == L" ParentClass > Class#Name2");
+}
+
+TEST_CASE("does not split a target string on a comma inside a property filter") {
+    auto parts = SplitTargetString(L"Grid[Tag=A,B] > Rectangle, Grid#Other");
+    REQUIRE(parts.size() == 2);
+    CHECK(parts[0] == L"Grid[Tag=A,B] > Rectangle");
+    CHECK(parts[1] == L" Grid#Other");
+}
+
+TEST_CASE("splits a target string with no comma into a single part") {
+    auto parts = SplitTargetString(L"Grid > Rectangle");
+    REQUIRE(parts.size() == 1);
+    CHECK(parts[0] == L"Grid > Rectangle");
+}
+
+TEST_CASE("parses each comma-separated part of a target into its own chain") {
+    auto groups = ParseSelectorGroups(
+        L"Taskbar.SearchBoxButton#A > Border#Bg, Taskbar.SearchBoxButton#A > Border#Bg2");
+    REQUIRE(groups.size() == 2);
+    REQUIRE(groups[0].size() == 2);
+    CHECK(groups[0][1].name == L"Bg");
+    REQUIRE(groups[1].size() == 2);
+    CHECK(groups[1][1].name == L"Bg2");
+}
+
+TEST_CASE("parses a single-chain target into one group") {
+    auto groups = ParseSelectorGroups(L"Grid#RootGrid > Rectangle");
+    REQUIRE(groups.size() == 1);
+    REQUIRE(groups[0].size() == 2);
+    CHECK(groups[0][1].type == L"Rectangle");
 }

@@ -1,0 +1,21 @@
+{
+  "id": "SimplyTransparent",
+  "name": "SimplyTransparent",
+  "author": "Osprey00",
+  "constants": {},
+  "resourceVariables": {},
+  "rules": [
+    {
+      "target": "Taskbar.TaskbarFrame > Grid#RootGrid > Taskbar.TaskbarBackground > Grid > Rectangle#BackgroundFill",
+      "styles": [
+        "Fill=Transparent"
+      ]
+    },
+    {
+      "target": "Rectangle#BackgroundStroke",
+      "styles": [
+        "Fill=Transparent"
+      ]
+    }
+  ]
+}

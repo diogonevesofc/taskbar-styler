@@ -14,7 +14,11 @@ namespace styler {
 
 struct ThemeRule {
     std::wstring target;  // The original selector text, kept for diagnostics.
-    std::vector<ElementMatcher> selector;
+    // One or more alternative selector chains, split from `target` on its
+    // top-level commas (see SplitTargetString). The rule's styles apply to
+    // an element that matches ANY chain here - the comma is an OR, not an
+    // AND, mirroring upstream's per-target-part rule expansion.
+    std::vector<std::vector<ElementMatcher>> selector;
     std::vector<StyleRule> styles;
 };
 
