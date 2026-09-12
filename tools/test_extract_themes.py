@@ -125,6 +125,16 @@ def test_accepts_an_at_sign_in_constant_names():
     assert pairs["Accent1@Dark"] == "{ThemeResource SystemAccentColorLight3}"
 
 
+def test_does_not_trim_constant_values():
+    """Ruling 10: the JSON is a faithful transliteration, so Task 6's
+    byte-for-byte round-trip stays possible. Trimming belongs to constant
+    resolution in the TAP (Plano 2), not to this converter. `mainRadius =
+    8` (with the surrounding spaces) is one of 64 real entries in the
+    vendored source that have whitespace around '='; the value must come
+    out as ' 8', not '8'."""
+    assert ex._split_pairs(["mainRadius = 8"])["mainRadius"] == " 8"
+
+
 def test_span_covers_the_whole_statement():
     tables = ex.parse_source(SAMPLE)
     a, b = tables["Sample"].span
@@ -161,19 +171,20 @@ def test_squircle_gets_the_os_feature_variant_field():
 
 
 def test_decodes_uxxxx_escapes():
-    """The vendored source encodes non-ASCII glyphs (Segoe Fluent Icons)
-    as \\uXXXX; these must decode to the real character, not the four
-    literal characters 'uXXXX'."""
-    src = r'''
-const Theme g_themeIcon = {{
-    ThemeTargetStyles{L"TextBlock#Icon", {
-        L"Text="}},
-}, {
-}};
-'''
+    """The vendored source encodes non-ASCII glyphs (Segoe Fluent
+    Icons) as a backslash followed by 'u' and 4 hex digits; these
+    must decode to the real character, not the six literal
+    characters '\\uXXXX'."""
+    src = ('\n'
+           'const Theme g_themeIcon = {{\n'
+           '    ThemeTargetStyles{L"TextBlock#Icon", {\n'
+           '        L"Text=\\uE971"}},\n'
+           '}, {\n'
+           '}};\n')
+    assert "\\uE971" in src  # sanity: a real backslash, not the decoded char
     tables = ex.parse_source(src)
     styles = tables["Icon"].targets[0][1]
-    assert styles == ["Text="]
+    assert styles == ["Text=" + chr(0xE971)]
 
 
 def test_rejects_an_unknown_escape_sequence():
