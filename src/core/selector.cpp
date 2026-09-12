@@ -181,7 +181,14 @@ std::vector<std::vector<ElementMatcher>> ParseSelectorGroups(
     std::wstring_view str) {
     std::vector<std::vector<ElementMatcher>> groups;
     for (auto chain : SplitTargetString(str)) {
-        groups.push_back(ParseSelector(chain));
+        try {
+            groups.push_back(ParseSelector(chain));
+        } catch (const AmbiguousMatcherError&) {
+            // Drop just this chain; sibling chains from the same target
+            // still get a chance to parse. An all-or-nothing catch here
+            // would throw away good chains alongside the bad one for any
+            // multi-chain target - see the header comment.
+        }
     }
     return groups;
 }

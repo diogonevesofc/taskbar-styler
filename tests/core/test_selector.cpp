@@ -3,6 +3,7 @@
 
 #include <styler/selector.h>
 
+using styler::AmbiguousMatcherError;
 using styler::ElementMatcher;
 using styler::ParseElementMatcher;
 using styler::ParseError;
@@ -88,6 +89,15 @@ TEST_CASE("rejects malformed input") {
     CHECK_THROWS_AS(ParseElementMatcher(L"Grid[=X]"), ParseError);
 }
 
+// AmbiguousMatcherError is a narrower ParseError specifically for "more than
+// one #Name" - the one selector error ParseSelectorGroups tolerates
+// (per chain). Asserted directly, not just via its ParseError base, so a
+// future change that widens or narrows which errors get this subtype is
+// caught here rather than only downstream in theme_loader tests.
+TEST_CASE("more than one name throws the narrower AmbiguousMatcherError") {
+    CHECK_THROWS_AS(ParseElementMatcher(L"Grid#A#B"), AmbiguousMatcherError);
+}
+
 TEST_CASE("splits without spaces around the separator") {
     auto parts = ParseSelector(L"Grid#RootGrid>Rectangle");
     REQUIRE(parts.size() == 2);
@@ -131,6 +141,21 @@ TEST_CASE("splits a target string with no comma into a single part") {
     CHECK(parts[0] == L"Grid > Rectangle");
 }
 
+TEST_CASE("splits a target string with a trailing comma into an empty final part") {
+    auto parts = SplitTargetString(L"Grid#A,");
+    REQUIRE(parts.size() == 2);
+    CHECK(parts[0] == L"Grid#A");
+    CHECK(parts[1].empty());
+}
+
+TEST_CASE("splits a target string with a doubled comma into an empty middle part") {
+    auto parts = SplitTargetString(L"Grid#A,,Grid#B");
+    REQUIRE(parts.size() == 3);
+    CHECK(parts[0] == L"Grid#A");
+    CHECK(parts[1].empty());
+    CHECK(parts[2] == L"Grid#B");
+}
+
 TEST_CASE("parses each comma-separated part of a target into its own chain") {
     auto groups = ParseSelectorGroups(
         L"Taskbar.SearchBoxButton#A > Border#Bg, Taskbar.SearchBoxButton#A > Border#Bg2");
@@ -146,4 +171,21 @@ TEST_CASE("parses a single-chain target into one group") {
     REQUIRE(groups.size() == 1);
     REQUIRE(groups[0].size() == 2);
     CHECK(groups[0][1].type == L"Rectangle");
+}
+
+// Mirrors upstream's per-target-part tolerance (vendor/upstream/...:18952):
+// one bad chain in a multi-chain target must not take a good sibling chain
+// down with it. An all-or-nothing catch would return an empty result here;
+// this must return the one good chain instead.
+TEST_CASE("drops only the ambiguous chain from a multi-chain target, keeps the rest") {
+    auto groups = ParseSelectorGroups(L"Grid#A#B, Grid#Good > Rectangle");
+    REQUIRE(groups.size() == 1);
+    REQUIRE(groups[0].size() == 2);
+    CHECK(groups[0][0].name == L"Good");
+    CHECK(groups[0][1].type == L"Rectangle");
+}
+
+TEST_CASE("returns an empty result when every chain of a target is ambiguous") {
+    auto groups = ParseSelectorGroups(L"Grid#A#B");
+    CHECK(groups.empty());
 }

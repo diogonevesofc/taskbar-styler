@@ -20,6 +20,16 @@ struct ThemeRule {
     // AND, mirroring upstream's per-target-part rule expansion.
     std::vector<std::vector<ElementMatcher>> selector;
     std::vector<StyleRule> styles;
+
+    // True when this rule cannot be applied: every selector chain was
+    // unparseable (`selector` is empty, so nothing would ever match) or its
+    // style list was thrown out because one entry was unparseable (`styles`
+    // is empty even though the shipped JSON listed some). The rule stays in
+    // `Theme::rules` either way - see theme_loader.h - so consumers MUST
+    // check this flag before applying a rule rather than assuming a
+    // non-empty `rules` entry is always usable. `Theme::diagnostics` carries
+    // one human-readable line per rule this is set on.
+    bool dead = false;
 };
 
 // The one runtime conditional in the upstream mod: a theme that swaps itself
@@ -37,6 +47,12 @@ struct Theme {
     std::map<std::wstring, std::wstring> resource_variables;
     std::vector<ThemeRule> rules;
     std::optional<OsFeatureVariant> os_feature_variant;
+
+    // One human-readable line per rule the loader marked `dead`, naming the
+    // theme id, the offending target, and why - see theme_loader.h §"fails
+    // closed" exceptions. Empty for the overwhelming majority of themes;
+    // never silent when non-empty, per spec §7.6.
+    std::vector<std::wstring> diagnostics;
 };
 
 }  // namespace styler

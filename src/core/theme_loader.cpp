@@ -75,26 +75,36 @@ Theme LoadThemeFromJson(std::string_view utf8) {
 
         ThemeRule rule;
         rule.target = RequiredString(entry, "target");
-        // One shipped target (LiquidGlass2's SnapLayoutControl /
-        // LayoutBorder rule) glues two segments with a plain space instead
-        // of '>' - a real authoring bug in the upstream C++ source, not a
-        // syntax this loader should learn to accept. Upstream's own
+        // ParseSelectorGroups already drops any individual comma-separated
+        // chain that hits the one tolerated selector error
+        // (AmbiguousMatcherError - see selector.h/.cpp), keeping sibling
+        // chains alive. What's left here is deciding what an empty (or
+        // shortened) result means for the RULE: LiquidGlass2's
+        // SnapLayoutControl/LayoutBorder target (two matchers glued by a
+        // space instead of '>', a real upstream authoring bug) is a single
+        // chain, so dropping its one bad chain leaves nothing - the rule
+        // matches nothing and is dead. Upstream's own
         // ElementMatcherFromString (vendor/upstream/...:18628) throws the
         // identical "more than one name" error on it, and
         // AddElementCustomizationRules (vendor/upstream/...:18956) catches
-        // that per target and logs it, so the target is never registered -
-        // it is already dead at runtime. Only THIS narrow error class is
-        // tolerated (see AmbiguousMatcherError); leaving `selector` empty
-        // preserves upstream's dead-target outcome (an empty selector
-        // matches nothing) while keeping the rule itself in the theme, so
-        // the rule count some tools rely on (see test_corpus.cpp) still
-        // reflects one entry per shipped ThemeTargetStyles block. Every
-        // other selector error (empty type, unmatched bracket, ...) still
-        // fails the whole theme closed, unchanged.
-        try {
+        // that per target and never registers it - already dead at runtime.
+        // Unlike upstream, we say so instead of staying silent.
+        {
+            auto chain_count = SplitTargetString(rule.target).size();
             rule.selector = ParseSelectorGroups(rule.target);
-        } catch (const AmbiguousMatcherError&) {
-            rule.selector.clear();
+            if (rule.selector.size() < chain_count) {
+                rule.dead = rule.selector.empty();
+                theme.diagnostics.push_back(
+                    L"theme " + theme.id + L": target '" + rule.target +
+                    L"' - " +
+                    (rule.dead
+                         ? L"every selector chain is unparseable (glued "
+                           L"matchers, e.g. two '#Name's with no '>' "
+                           L"between them); rule matches nothing"
+                         : L"one or more comma-separated selector chains "
+                           L"are unparseable and were dropped; the "
+                           L"remaining chain(s) still apply"));
+            }
         }
 
         auto styles_it = entry.find("styles");
@@ -111,13 +121,24 @@ Theme LoadThemeFromJson(std::string_view utf8) {
             // the upstream C++ source (`L""`). Upstream's own ParseRule
             // (vendor/upstream/...:18727) throws "'=' is missing" on it, and
             // AddElementCustomizationRules (vendor/upstream/...:18956)
-            // catches that per target and logs it - discarding the whole
-            // target's customization, but never the theme. It is already
-            // inert at runtime, so skip it here rather than fail the theme;
-            // any other malformed entry (missing '=', etc.) still throws via
-            // ParseStyleRule below, unchanged.
+            // catches that per TARGET, discarding everything already parsed
+            // for it - not just the bad entry. Mirror that: throw away the
+            // whole styles list built so far for this rule (today that list
+            // is empty anyway - all four shipped occurrences are the only
+            // style on their rule - but a rule with good styles ahead of a
+            // bad one must lose them too, faithfully). Stop looking at the
+            // rest of this rule's style strings, same as upstream aborting
+            // the target; any other malformed entry (missing '=', etc.)
+            // still throws via ParseStyleRule below and fails the theme
+            // closed, unchanged.
             if (raw.empty()) {
-                continue;
+                rule.styles.clear();
+                rule.dead = true;
+                theme.diagnostics.push_back(
+                    L"theme " + theme.id + L": target '" + rule.target +
+                    L"' - has an unparseable (empty) style entry; "
+                    L"discarding all styles for this rule");
+                break;
             }
             rule.styles.push_back(ParseStyleRule(Utf8ToWide(raw)));
         }

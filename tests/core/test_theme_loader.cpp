@@ -80,25 +80,35 @@ TEST_CASE("loads the os feature variant") {
 
 // Upstream's own ParseRule (vendor/upstream/...:18727) throws on a style
 // with no '=', and AddElementCustomizationRules (vendor/upstream/...:18956)
-// catches that per target and discards its whole customization - the target
-// is already a no-op at runtime. A handful of shipped rules (LiquidGlass2's
-// #DisplayName and #Iconlmage targets) carry exactly this: a literal empty
-// style string. The loader skips it rather than failing the whole theme,
-// while every other malformed style (see below) still fails closed.
-TEST_CASE("skips a literal empty style string instead of failing the theme") {
+// catches that per target and discards its whole customization, including
+// any styles already parsed for that same target - not just the bad entry.
+// A handful of shipped rules (LiquidGlass2's #DisplayName and #Iconlmage
+// targets) carry exactly this: a literal empty style string. The loader
+// mirrors upstream instead of quietly keeping the rule usable: it clears
+// every style already collected for the rule, marks it dead, and reports
+// why - while every other malformed style (see below) still fails the whole
+// theme closed.
+TEST_CASE("an empty style string kills the whole rule's styles and marks it dead") {
     auto theme = LoadThemeFromJson(R"({
       "id": "T", "name": "T",
-      "rules": [ { "target": "Grid", "styles": [""] } ]
+      "rules": [ { "target": "Grid", "styles": ["Fill=Red", ""] } ]
     })");
     REQUIRE(theme.rules.size() == 1);
-    CHECK(theme.rules[0].styles.empty());
+    CHECK(theme.rules[0].styles.empty());  // "Fill=Red", parsed first, is
+                                            // also discarded - faithful to
+                                            // upstream's per-target discard.
+    CHECK(theme.rules[0].dead);
+    REQUIRE(theme.diagnostics.size() == 1);
+    CHECK(theme.diagnostics[0].find(L"T") != std::wstring::npos);
+    CHECK(theme.diagnostics[0].find(L"Grid") != std::wstring::npos);
 }
 
 // Mirrors upstream's own AddElementCustomizationRules (vendor/upstream/...:
 // 18956), which catches a bad target's selector error and discards just
 // that target's customization rather than the whole theme. LiquidGlass2
-// ships exactly this: two segments glued by a space instead of '>'.
-TEST_CASE("keeps a rule with an unparseable selector instead of failing the theme") {
+// ships exactly this: two segments glued by a space instead of '>'. The
+// loader reports it instead of silently keeping an inert rule around.
+TEST_CASE("an unparseable selector chain marks the rule dead and reports why") {
     auto theme = LoadThemeFromJson(R"({
       "id": "T", "name": "T",
       "rules": [
@@ -108,7 +118,28 @@ TEST_CASE("keeps a rule with an unparseable selector instead of failing the them
     REQUIRE(theme.rules.size() == 1);
     CHECK(theme.rules[0].target == L"Grid#A Grid#B");
     CHECK(theme.rules[0].selector.empty());
-    REQUIRE(theme.rules[0].styles.size() == 1);
+    CHECK(theme.rules[0].dead);
+    REQUIRE(theme.rules[0].styles.size() == 1);  // the styles are untouched
+    REQUIRE(theme.diagnostics.size() == 1);
+    CHECK(theme.diagnostics[0].find(L"Grid#A Grid#B") != std::wstring::npos);
+}
+
+// A multi-chain target where only one chain is ambiguous must keep the good
+// chain and stay alive - the per-rule fallout of ParseSelectorGroups' new
+// per-chain isolation (see test_selector.cpp for the lower-level case).
+TEST_CASE("drops one bad chain of a multi-chain target but keeps the rule alive") {
+    auto theme = LoadThemeFromJson(R"({
+      "id": "T", "name": "T",
+      "rules": [
+        { "target": "Grid#A#B, Grid#Good > Rectangle", "styles": ["Fill=Red"] }
+      ]
+    })");
+    REQUIRE(theme.rules.size() == 1);
+    CHECK_FALSE(theme.rules[0].dead);
+    REQUIRE(theme.rules[0].selector.size() == 1);
+    CHECK(theme.rules[0].selector[0][0].name == L"Good");
+    REQUIRE(theme.diagnostics.size() == 1);
+    CHECK(theme.diagnostics[0].find(L"dropped") != std::wstring::npos);
 }
 
 TEST_CASE("fails closed on malformed input") {

@@ -2,6 +2,8 @@
 
 Todos os temas vieram do mod [windows-11-taskbar-styler](https://github.com/ramensoftware/windhawk-mods) e do [guia de estilos](https://github.com/ramensoftware/windows-11-taskbar-styling-guide), sob GPL-3.0. Credito de cada autor abaixo.
 
+43 de 55 autores resolvidos.
+
 | Tema | Autor |
 |---|---|
 | [21996Taskbar](https://github.com/ramensoftware/windows-11-taskbar-styling-guide/blob/main/Themes/21996Taskbar/README.md) | Tails |
@@ -12,11 +14,11 @@ Todos os temas vieram do mod [windows-11-taskbar-styler](https://github.com/rame
 | [BottomDensy_variant_NoInd](https://github.com/ramensoftware/windows-11-taskbar-styling-guide/blob/main/Themes/BottomDensy/README.md) | es |
 | [Bubbles](https://github.com/ramensoftware/windows-11-taskbar-styling-guide/blob/main/Themes/Bubbles/README.md) | m417z |
 | [CleanSlate](https://github.com/ramensoftware/windows-11-taskbar-styling-guide/blob/main/Themes/CleanSlate/README.md) | Xerios |
-| [Command_Center](https://github.com/ramensoftware/windows-11-taskbar-styling-guide/blob/main/Themes/Command_Center/README.md) | — |
+| Command_Center | — |
 | [DockLike](https://github.com/ramensoftware/windows-11-taskbar-styling-guide/blob/main/Themes/DockLike/README.md) | Amber |
 | [FluentGlass](https://github.com/ramensoftware/windows-11-taskbar-styling-guide/blob/main/Themes/FluentGlass/README.md) | heartovation |
 | [Fluid](https://github.com/ramensoftware/windows-11-taskbar-styling-guide/blob/main/Themes/Fluid/README.md) | PhantomNimbi |
-| [FrostedAcrylic](https://github.com/ramensoftware/windows-11-taskbar-styling-guide/blob/main/Themes/FrostedAcrylic/README.md) | — |
+| FrostedAcrylic | — |
 | [FrostyGlass](https://github.com/ramensoftware/windows-11-taskbar-styling-guide/blob/main/Themes/FrostyGlass/README.md) | Guido Lamanna |
 | [LayerMicaUI](https://github.com/ramensoftware/windows-11-taskbar-styling-guide/blob/main/Themes/LayerMicaUI/README.md) | Nimai-HK |
 | [LiquidGlass](https://github.com/ramensoftware/windows-11-taskbar-styling-guide/blob/main/Themes/LiquidGlass/README.md) | PhantomNimbi |
@@ -28,22 +30,22 @@ Todos os temas vieram do mod [windows-11-taskbar-styler](https://github.com/rame
 | [Luminosity_variant_Compact](https://github.com/ramensoftware/windows-11-taskbar-styling-guide/blob/main/Themes/Luminosity/README.md) | mendes.image |
 | [Luminosity_variant_Dock](https://github.com/ramensoftware/windows-11-taskbar-styling-guide/blob/main/Themes/Luminosity/README.md) | mendes.image |
 | [Matter](https://github.com/ramensoftware/windows-11-taskbar-styling-guide/blob/main/Themes/Matter/README.md) | ZoraizLajwer |
-| [Minecraft_Hotbar](https://github.com/ramensoftware/windows-11-taskbar-styling-guide/blob/main/Themes/Minecraft_Hotbar/README.md) | — |
-| [OS26_Liquid_Glass_variant_ClearMacDock](https://github.com/ramensoftware/windows-11-taskbar-styling-guide/blob/main/Themes/OS26_Liquid_Glass/README.md) | — |
-| [OS26_Liquid_Glass_variant_ClearMacDockCompact](https://github.com/ramensoftware/windows-11-taskbar-styling-guide/blob/main/Themes/OS26_Liquid_Glass/README.md) | — |
-| [OS26_Liquid_Glass_variant_ClearTaskbar](https://github.com/ramensoftware/windows-11-taskbar-styling-guide/blob/main/Themes/OS26_Liquid_Glass/README.md) | — |
-| [OS26_Liquid_Glass_variant_DarkMacDock](https://github.com/ramensoftware/windows-11-taskbar-styling-guide/blob/main/Themes/OS26_Liquid_Glass/README.md) | — |
-| [OS26_Liquid_Glass_variant_DarkMacDockCompact](https://github.com/ramensoftware/windows-11-taskbar-styling-guide/blob/main/Themes/OS26_Liquid_Glass/README.md) | — |
-| [OS26_Liquid_Glass_variant_DarkTaskbar](https://github.com/ramensoftware/windows-11-taskbar-styling-guide/blob/main/Themes/OS26_Liquid_Glass/README.md) | — |
-| [One_UI_8_5_variant_Dock](https://github.com/ramensoftware/windows-11-taskbar-styling-guide/blob/main/Themes/One_UI_8_5/README.md) | — |
-| [One_UI_8_5_variant_Taskbar](https://github.com/ramensoftware/windows-11-taskbar-styling-guide/blob/main/Themes/One_UI_8_5/README.md) | — |
+| Minecraft_Hotbar | — |
+| OS26_Liquid_Glass_variant_ClearMacDock | — |
+| OS26_Liquid_Glass_variant_ClearMacDockCompact | — |
+| OS26_Liquid_Glass_variant_ClearTaskbar | — |
+| OS26_Liquid_Glass_variant_DarkMacDock | — |
+| OS26_Liquid_Glass_variant_DarkMacDockCompact | — |
+| OS26_Liquid_Glass_variant_DarkTaskbar | — |
+| One_UI_8_5_variant_Dock | — |
+| One_UI_8_5_variant_Taskbar | — |
 | [Oversimplified&Accentuated](https://github.com/ramensoftware/windows-11-taskbar-styling-guide/blob/main/Themes/Oversimplified&Accentuated/README.md) | OsamaJT |
 | [Pills](https://github.com/ramensoftware/windows-11-taskbar-styling-guide/blob/main/Themes/Pills/README.md) | Deen-0x |
 | [Plasma](https://github.com/ramensoftware/windows-11-taskbar-styling-guide/blob/main/Themes/Plasma/README.md) | Sand216 |
 | [RosePine](https://github.com/ramensoftware/windows-11-taskbar-styling-guide/blob/main/Themes/RosePine/README.md) | asev |
 | [SimplyTransparent](https://github.com/ramensoftware/windows-11-taskbar-styling-guide/blob/main/Themes/SimplyTransparent/README.md) | Osprey00 |
 | [Squircle](https://github.com/ramensoftware/windows-11-taskbar-styling-guide/blob/main/Themes/Squircle/README.md) | AsvnDG |
-| [Squircle_WeatherOnTheRight](https://github.com/ramensoftware/windows-11-taskbar-styling-guide/blob/main/Themes/Squircle_WeatherOnTheRight/README.md) | — |
+| Squircle_WeatherOnTheRight | — |
 | [SunValley](https://github.com/ramensoftware/windows-11-taskbar-styling-guide/blob/main/Themes/SunValley/README.md) | Tails |
 | [Surface](https://github.com/ramensoftware/windows-11-taskbar-styling-guide/blob/main/Themes/Surface/README.md) | Jimmy |
 | [TaskbarToStatusbar](https://github.com/ramensoftware/windows-11-taskbar-styling-guide/blob/main/Themes/TaskbarToStatusbar/README.md) | HTImen |
@@ -59,3 +61,5 @@ Todos os temas vieram do mod [windows-11-taskbar-styler](https://github.com/rame
 | [WindowGlass_variant_Split](https://github.com/ramensoftware/windows-11-taskbar-styling-guide/blob/main/Themes/WindowGlass/README.md) | Nathaniel4JC |
 | [Windows7](https://github.com/ramensoftware/windows-11-taskbar-styling-guide/blob/main/Themes/Windows7/README.md) | Sand216 |
 | [xdark](https://github.com/ramensoftware/windows-11-taskbar-styling-guide/blob/main/Themes/xdark/README.md) | xscriptorcode |
+
+`—`: autor nao encontrado no guia de estilos (variante sem pagina propria, ou tema sem entrada no guia).

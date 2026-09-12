@@ -64,6 +64,16 @@ std::vector<std::wstring_view> SplitTargetString(std::wstring_view target);
 // parses each chain with ParseSelector. A rule's target matches an element
 // if ANY of the returned chains match it - the comma is an OR, not an AND.
 // 624 of the 2396 shipped rules (53 of 55 themes) use more than one chain.
+//
+// A chain that throws AmbiguousMatcherError is dropped and parsing continues
+// with the rest - mirroring upstream's per-target-part tolerance (see
+// theme_loader.cpp), which never lets one bad part of a multi-part target
+// take good sibling parts down with it. Every other ParseError still
+// propagates and aborts the whole call: only this one narrow error class is
+// chain-scoped. The result can therefore be shorter than the number of
+// chains `SplitTargetString` would report, including empty if every chain
+// was bad - it is the caller's job to decide what an empty (or shortened)
+// result means for the owning rule.
 std::vector<std::vector<ElementMatcher>> ParseSelectorGroups(
     std::wstring_view str);
 

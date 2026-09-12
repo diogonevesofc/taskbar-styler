@@ -44,19 +44,48 @@ def main() -> int:
         if p.name != "credits.json"
     )
 
+    # A transient fetch failure (network blip, upstream hiccup) returns ""
+    # indistinguishable from a real 404. Without this, a rerun during an
+    # outage would silently blank out every previously-resolved credit:
+    # never overwrite a known-good entry with an empty one.
+    credits_path = themes_dir / "credits.json"
+    previous: dict[str, str] = {}
+    if credits_path.exists():
+        try:
+            previous = json.loads(credits_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            previous = {}
+
     credits: dict[str, str] = {}
     misses: list[str] = []
     for theme_id in ids:
         author = fetch(theme_id)
+        if not author and previous.get(theme_id):
+            print(f"  keeping previous author for {theme_id} "
+                  "(this fetch came back empty)", file=sys.stderr)
+            author = previous[theme_id]
         credits[theme_id] = author
         if not author:
             misses.append(theme_id)
         print(f"{theme_id}: {author or '(not found)'}")
 
-    (themes_dir / "credits.json").write_text(
+    credits_path.write_text(
         json.dumps(credits, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8")
 
+    write_themes_md(credits)
+
+    print(f"\n{len(credits)} themes, THEMES.md written")
+    print(f"authors found: {len(credits) - len(misses)}, missing: {len(misses)}")
+    if misses:
+        print("missing authors for:")
+        for theme_id in misses:
+            print(f"  - {theme_id}")
+    return 0
+
+
+def write_themes_md(credits: dict[str, str]) -> None:
+    resolved = sum(1 for author in credits.values() if author)
     lines = [
         "# Temas",
         "",
@@ -66,24 +95,31 @@ def main() -> int:
         "[guia de estilos](https://github.com/ramensoftware/windows-11-taskbar-styling-guide),"
         " sob GPL-3.0. Credito de cada autor abaixo.",
         "",
+        f"{resolved} de {len(credits)} autores resolvidos.",
+        "",
         "| Tema | Autor |",
         "|---|---|",
     ]
     for theme_id, author in credits.items():
-        base = theme_id.split("_variant_")[0]
-        link = ("https://github.com/ramensoftware/"
-                f"windows-11-taskbar-styling-guide/blob/main/Themes/{base}/README.md")
-        lines.append(f"| [{theme_id}]({link}) | {author or '—'} |")
+        if author:
+            base = theme_id.split("_variant_")[0]
+            link = ("https://github.com/ramensoftware/"
+                    f"windows-11-taskbar-styling-guide/blob/main/Themes/{base}/README.md")
+            name_cell = f"[{theme_id}]({link})"
+        else:
+            # No author means the fetch found no matching styling-guide
+            # page (see fetch()) - linking would point at a README that
+            # does not exist.
+            name_cell = theme_id
+        lines.append(f"| {name_cell} | {author or '—'} |")
+
+    lines += [
+        "",
+        "`—`: autor nao encontrado no guia de estilos (variante sem pagina "
+        "propria, ou tema sem entrada no guia).",
+    ]
 
     Path("THEMES.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-    print(f"\n{len(credits)} themes, THEMES.md written")
-    print(f"authors found: {len(credits) - len(misses)}, missing: {len(misses)}")
-    if misses:
-        print("missing authors for:")
-        for theme_id in misses:
-            print(f"  - {theme_id}")
-    return 0
 
 
 if __name__ == "__main__":
