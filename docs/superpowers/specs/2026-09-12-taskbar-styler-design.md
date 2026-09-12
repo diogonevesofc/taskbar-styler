@@ -175,8 +175,10 @@ e o do TAP. Mantendo string:
 ### 5.3 Exceções deliberadas
 
 - `constants` e `resourceVariables` são **mapas**, não listas `"Nome=valor"`. Aqui a string é
-  comprovadamente um par chave-valor; o mapa detecta chave duplicada e é melhor de editar. O
-  conversor **falha** se algum nome de constante contiver `=`, em vez de adivinhar.
+  comprovadamente um par chave-valor; o mapa detecta chave duplicada e é melhor de editar. A
+  divisão é no **primeiro** `=`: o valor pode conter `=` (e contém, nos atributos XAML), o nome
+  não pode. O conversor **falha em vez de adivinhar** em três casos: entrada sem `=`, nome
+  vazio, ou chave duplicada dentro do mesmo tema.
 - O caso `Squircle` — único condicional de runtime do mod inteiro — vira um campo opcional,
   mantendo o número mágico junto do tema a que pertence:
 
