@@ -23,9 +23,14 @@ if(TASKBAR_STYLER_BUILD_TESTS)
   # doctest v2.4.11 declares cmake_minimum_required(VERSION 3.0), which newer
   # CMake releases (4.0+) reject outright. CMAKE_POLICY_VERSION_MINIMUM lets
   # CMake apply policies as if the minimum were this version instead, without
-  # patching the vendored dependency.
+  # patching the vendored dependency. Scoped tightly to this one call (set
+  # right before, unset right after) so it cannot silently lower the policy
+  # floor for any other dependency fetched later in this same directory scope
+  # (e.g. a future FetchContent_MakeAvailable that legitimately requires a
+  # stricter minimum would otherwise inherit this relaxed floor unnoticed).
   set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
   FetchContent_MakeAvailable(doctest)
+  unset(CMAKE_POLICY_VERSION_MINIMUM)
 
   enable_testing()
   add_subdirectory(tests/core)
