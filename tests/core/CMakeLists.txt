@@ -1,6 +1,7 @@
 add_executable(styler_core_tests
   test_smoke.cpp
   test_selector.cpp
+  test_style_rule.cpp
 )
 
 target_link_libraries(styler_core_tests PRIVATE
