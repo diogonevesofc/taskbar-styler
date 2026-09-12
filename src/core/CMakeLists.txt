@@ -1,5 +1,6 @@
 add_library(styler_core STATIC
   version.cpp
+  selector.cpp
 )
 
 target_include_directories(styler_core PUBLIC include)
