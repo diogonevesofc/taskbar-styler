@@ -330,7 +330,7 @@ reporta. Nunca aplica pela metade — meia taskbar estilizada parece bug do Wind
 
 **Exceção deliberada: referência a constante inexistente não é erro.** O upstream substitui
 `$Nome` por prefixo em qualquer posição do valor e deixa um `$` sem correspondência passar como
-literal (`ApplyStyleConstants`, `vendor/upstream/...:17958`). Isso não é descuido: dos dados
+literal (`ApplyStyleConstants`, `vendor/upstream/...:18536`). Isso não é descuido: dos dados
 reais, 85 das 1567 referências estão embutidas no meio do valor, e 10 não resolvem contra
 constante alguma — os temas `Luminosity_variant_Dock`, `Luminosity_variant_Compact` e `Fluid`
 dependem desse comportamento. Validar mais estrito que o upstream rejeitaria temas que

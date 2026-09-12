@@ -282,7 +282,7 @@ opcionalmente com `#nome`, `@grupoDeEstadoVisual`, `[índice]` e `[Prop=valor]`.
 Existem dois matchers especiais: `*` (zero ou mais ancestrais) e `:root`.
 
 A gramática está implementada em `ElementMatcherFromString`,
-`vendor/upstream/windows-11-taskbar-styler.wh.cpp:18051`. As mensagens de erro
+`vendor/upstream/windows-11-taskbar-styler.wh.cpp:18628`. As mensagens de erro
 de lá são a lista de entradas inválidas a cobrir.
 
 **Files:**
@@ -623,7 +623,7 @@ git commit -m "feat(core): parser de seletor de elemento"
 
 Uma regra é `Property=value`, `Property:=xamlValue`,
 `Property@VisualState=value` ou `Property=>VarName` (captura). Referência:
-`ParseRule` em `vendor/upstream/windows-11-taskbar-styler.wh.cpp:18150`.
+`ParseRule` em `vendor/upstream/windows-11-taskbar-styler.wh.cpp:18727`.
 
 Duas combinações são proibidas e devem lançar: `:=>` e `@VisualState=>`.
 
@@ -1027,7 +1027,7 @@ TEST_CASE("fails closed on malformed input") {
 }
 
 // O carregador NAO valida resolucao de constante. O upstream
-// (ApplyStyleConstants, vendor/upstream/...:17958) substitui `$Nome` por
+// (ApplyStyleConstants, vendor/upstream/...:18536) substitui `$Nome` por
 // prefixo em qualquer posicao do valor e deixa `$` sem correspondencia passar
 // como literal. Nos dados reais, 85 referencias sao embutidas no meio do valor
 // e 10 nao resolvem contra constante alguma — lancar aqui rejeitaria os temas
