@@ -2,6 +2,8 @@ add_library(styler_core STATIC
   version.cpp
   selector.cpp
   style_rule.cpp
+  utf.cpp
+  theme_loader.cpp
 )
 
 target_include_directories(styler_core PUBLIC include)

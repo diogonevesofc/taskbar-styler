@@ -1,0 +1,15 @@
+{
+  "id": "TestTheme",
+  "name": "Test Theme",
+  "author": "Ninguém",
+  "constants": {
+    "Bg": "<WindhawkBlur BlurAmount=\"18\" TintColor=\"#25323232\"/>"
+  },
+  "resourceVariables": {},
+  "rules": [
+    {
+      "target": "Taskbar.TaskbarFrame > Grid#RootGrid",
+      "styles": ["Fill:=$Bg", "Visibility=Collapsed"]
+    }
+  ]
+}
