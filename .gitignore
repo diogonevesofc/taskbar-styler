@@ -1,0 +1,12 @@
+# build
+build/
+out/
+bin/
+obj/
+
+# VS
+.vs/
+*.user
+
+# runtime
+*.log
