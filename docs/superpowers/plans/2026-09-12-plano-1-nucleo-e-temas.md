@@ -23,7 +23,11 @@ Studio), doctest, nlohmann/json, Python 3 para o conversor, GitHub Actions.
 ## Global Constraints
 
 - **Licença GPL-3.0.** Obra derivada de `windows-11-taskbar-styler` (m417z).
-  Todo arquivo fonte novo leva o cabeçalho de licença curto (SPDX).
+  Todo arquivo de **código** novo — `.h`, `.cpp`, `.py` — leva o cabeçalho
+  `// SPDX-License-Identifier: GPL-3.0-or-later` (ou `#` em Python). Arquivos de
+  build e CI (`CMakeLists.txt`, `*.yml`) **não** levam: a obrigação de aviso da
+  GPL já está satisfeita por `LICENSE`, `NOTICE` e os cabeçalhos do código, e
+  espalhar SPDX por configuração só adiciona ruído.
 - **Idioma:** identificadores e comentários de código em **inglês**; documentação
   (`README.md`, `THEMES.md`, `docs/`) em **português**.
 - **Padrão C++:** C++20. Compilador: MSVC do Visual Studio 2026 Community.
@@ -73,6 +77,7 @@ código.
 - Create: `CMakeLists.txt`
 - Create: `src/core/CMakeLists.txt`
 - Create: `src/core/include/styler/version.h`
+- Create: `src/core/version.cpp`
 - Create: `tests/core/CMakeLists.txt`
 - Create: `tests/core/test_smoke.cpp`
 - Create: `.github/workflows/ci.yml`
