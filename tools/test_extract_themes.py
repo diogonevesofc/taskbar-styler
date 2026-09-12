@@ -202,6 +202,24 @@ const Theme g_themeBad = {{
         ex.parse_source(src)
 
 
+def test_roundtrip_of_the_sample():
+    tables = ex.parse_source(SAMPLE)
+    table = tables["Sample"]
+    start, end = table.span
+    assert ex.emit_theme_table("Sample", table) == SAMPLE[start:end]
+
+
+def test_roundtrip_of_every_real_theme():
+    """The real proof: all 55 tables in the upstream source."""
+    text = VENDOR_SOURCE.read_text(encoding="utf-8")
+    tables = ex.parse_source(text)
+    assert len(tables) == 55
+
+    for name, table in tables.items():
+        start, end = table.span
+        assert ex.emit_theme_table(name, table) == text[start:end], name
+
+
 def test_real_source_has_55_tables_and_54_selectable_ids():
     """Integration check against the actual vendored source: 55 theme
     tables, 54 selectable ids, and exactly one struct with no selectable

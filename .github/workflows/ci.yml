@@ -23,6 +23,11 @@ jobs:
       - name: Converter tests
         run: python -m pytest tools/ -q
 
+      - name: Theme conversion round-trip
+        run: >
+          python tools/extract_themes.py roundtrip
+          --source vendor/upstream/windows-11-taskbar-styler.wh.cpp
+
       - name: Configure
         run: cmake -S . -B build -G Ninja
 

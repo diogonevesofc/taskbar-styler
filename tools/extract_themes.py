@@ -247,6 +247,102 @@ def to_theme_json(name: str, table: ThemeTable, theme_id: str,
     return doc
 
 
+def _escape_wide(s: str) -> str:
+    """Reverses `_read_wide_literals`'s decoding, byte for byte.
+
+    The vendored source's 55 theme spans use exactly three escape forms
+    (measured across all 9933 literals therein): `\\"`, `\\\\`, and
+    `\\uXXXX` with 4 uppercase hex digits for every character above
+    U+007F. Nothing else is escaped.
+    """
+    out: list[str] = []
+    for c in s:
+        if c == "\\":
+            out.append("\\\\")
+        elif c == '"':
+            out.append('\\"')
+        elif ord(c) > 127:
+            out.append(f"\\u{ord(c):04X}")
+        else:
+            out.append(c)
+    return "".join(out)
+
+
+def emit_theme_table(name: str, table: ThemeTable) -> str:
+    """Reconstructs the exact C++ literal `parse_source` extracted `table`
+    from. This is the other half of the round-trip: `emit(parse(x)) == x`
+    is what proves the JSON conversion is lossless.
+
+    Upstream formatting quirks this has to reproduce exactly:
+
+    - Every `ThemeTargetStyles{...}` entry ends with a literal `}},`, with
+      no trailing comma before it after the last style in its list (styles
+      are joined by `,\\n`, and `}},` is appended directly to the last one)
+      - this holds for the last target in the table too, not just interior
+        ones.
+    - The block separator `}, {` is emitted only when a trailing block
+      actually follows. A theme's table has 0, 1, or 2 trailing blocks
+      (constants only, or constants + resourceVariables) - never emit a
+      `}, {` that has nothing after it, or the theme falls into the
+      "0 trailing blocks" case (18 of the 55 real tables) and a spurious
+      empty block would appear where upstream has none.
+    - Each entry inside a trailing block (constants or resourceVariables)
+      DOES get a trailing comma, including the last entry in the block.
+    - The whole table always closes with `}};` on its own trailing text
+      (no newline after it - `ThemeTable.span` ends right after the `;`).
+    """
+    lines = [f"const Theme g_theme{name} = {{{{"]
+
+    for target, styles in table.targets:
+        lines.append(f'    ThemeTargetStyles{{L"{_escape_wide(target)}", {{')
+        body = [f'        L"{_escape_wide(s)}"' for s in styles]
+        lines.append(",\n".join(body) + "}},")
+
+    if table.constants or table.resource_variables:
+        lines.append("}, {")
+        for c in table.constants:
+            lines.append(f'    L"{_escape_wide(c)}",')
+
+    if table.resource_variables:
+        lines.append("}, {")
+        for v in table.resource_variables:
+            lines.append(f'    L"{_escape_wide(v)}",')
+
+    lines.append("}};")
+    return "\n".join(lines)
+
+
+def cmd_roundtrip(args: argparse.Namespace) -> int:
+    import difflib
+
+    text = Path(args.source).read_text(encoding="utf-8", errors="replace")
+    tables = parse_source(text)
+
+    failures = 0
+    for name, table in tables.items():
+        start, end = table.span
+        original = text[start:end]
+        emitted = emit_theme_table(name, table)
+        if emitted != original:
+            failures += 1
+            print(f"--- MISMATCH in g_theme{name} ---")
+            diff = difflib.unified_diff(
+                original.splitlines(), emitted.splitlines(),
+                fromfile="original", tofile="emitted", lineterm="")
+            for line in list(diff)[:40]:
+                print(line)
+            if failures >= 3:
+                print("... stopping after 3 mismatches")
+                break
+
+    if failures:
+        print(f"\nFAILED: {failures} theme(s) diverged")
+        return 1
+
+    print(f"OK: {len(tables)} themes reconstructed byte for byte")
+    return 0
+
+
 def cmd_convert(args: argparse.Namespace) -> int:
     text = Path(args.source).read_text(encoding="utf-8", errors="replace")
     tables = parse_source(text)
@@ -298,6 +394,11 @@ def main() -> int:
         help="fail if the number of parsed theme tables differs from this "
              "(default: 55); pass a negative number to disable the check")
     p.set_defaults(func=cmd_convert)
+
+    p = sub.add_parser("roundtrip",
+                       help="proves the conversion is lossless")
+    p.add_argument("--source", required=True)
+    p.set_defaults(func=cmd_roundtrip)
 
     args = parser.parse_args()
     return args.func(args)
