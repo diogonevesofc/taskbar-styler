@@ -26,8 +26,19 @@ class ThemeTable:
     span: tuple[int, int] = (0, 0)
 
 
+_HEX4 = re.compile(r"[0-9A-Fa-f]{4}")
+
+
 def _read_wide_literals(text: str, start: int, end: int) -> list[str]:
-    """Extracts every L"..." literal in a region, honoring escapes."""
+    """Extracts every L"..." literal in a region, honoring escapes.
+
+    The vendored source uses exactly three escape forms inside L"..."
+    literals: `\\"`, `\\\\`, and `\\uXXXX` (4 hex digits, used for non-ASCII
+    glyph codepoints such as Segoe Fluent Icons private-use characters).
+    Any other escape raises instead of being silently swallowed, so a
+    future upstream escape form breaks the build loudly rather than
+    corrupting a theme's selectors or style values.
+    """
     out: list[str] = []
     i = start
     while i < end:
@@ -38,8 +49,22 @@ def _read_wide_literals(text: str, start: int, end: int) -> list[str]:
                 c = text[i]
                 if c == "\\":
                     nxt = text[i + 1]
-                    buf.append({"n": "\n", "t": "\t", "r": "\r"}.get(nxt, nxt))
-                    i += 2
+                    if nxt == '"':
+                        buf.append('"')
+                        i += 2
+                    elif nxt == "\\":
+                        buf.append("\\")
+                        i += 2
+                    elif nxt == "u":
+                        digits = text[i + 2:i + 6]
+                        if not _HEX4.fullmatch(digits):
+                            raise ValueError(
+                                f"malformed \\u escape: {text[i:i + 6]!r}")
+                        buf.append(chr(int(digits, 16)))
+                        i += 6
+                    else:
+                        raise ValueError(
+                            f"unknown escape sequence: {text[i:i + 2]!r}")
                     continue
                 if c == '"':
                     i += 1
@@ -180,6 +205,13 @@ def _split_pairs(entries: list[str]) -> dict[str, str]:
             raise ValueError(f"constant without '=': {entry!r}")
         key, value = entry.split("=", 1)
         key = key.strip()
+        # `value` is intentionally NOT stripped/trimmed. Some upstream
+        # entries have spaces around '=' (e.g. `L"mainRadius = 8"`), and the
+        # JSON's contract is a faithful transliteration of the source: that
+        # is what makes Task 6's byte-for-byte round-trip possible. Trimming
+        # here would destroy information needed to reconstruct the original
+        # bytes. Any whitespace-insensitive constant *resolution* belongs to
+        # the runtime TAP (Plano 2), not to this converter.
         # A real constant name is a plain identifier. Entries mangled to
         # have no top-level '=' (see test_rejects_a_constant_without_equals)
         # still contain a later '=' nested in an attribute (e.g.
@@ -220,6 +252,17 @@ def cmd_convert(args: argparse.Namespace) -> int:
     tables = parse_source(text)
     ids = selectable_ids(text)
 
+    # THEME_START depends on exact upstream formatting (the theme region
+    # sits inside `// clang-format off`). A silent reformat there would make
+    # parse_source find fewer tables and this command would happily write a
+    # short set. Fail loudly instead of shipping a partial conversion.
+    if args.expect_count >= 0 and len(tables) != args.expect_count:
+        print(
+            f"error: expected {args.expect_count} theme tables, "
+            f"found {len(tables)} - upstream formatting may have changed",
+        )
+        return 1
+
     credits: dict[str, str] = {}
     credits_path = Path(args.credits) if args.credits else None
     if credits_path and credits_path.exists():
@@ -250,6 +293,10 @@ def main() -> int:
     p.add_argument("--source", required=True)
     p.add_argument("--out", required=True)
     p.add_argument("--credits", default=None)
+    p.add_argument(
+        "--expect-count", type=int, default=55,
+        help="fail if the number of parsed theme tables differs from this "
+             "(default: 55); pass a negative number to disable the check")
     p.set_defaults(func=cmd_convert)
 
     args = parser.parse_args()
