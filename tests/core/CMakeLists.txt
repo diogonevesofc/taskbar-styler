@@ -12,6 +12,13 @@ target_link_libraries(styler_core_tests PRIVATE
   doctest::doctest
 )
 
+if(MSVC)
+  # Same reasoning as src/core/CMakeLists.txt: /utf-8 for the non-ASCII
+  # literals in this directory's tests, /W4 /permissive- so the test target
+  # gets the same warning coverage as styler_core rather than a blind spot.
+  target_compile_options(styler_core_tests PRIVATE /utf-8 /W4 /permissive-)
+endif()
+
 # Lets tests reach fixture files under tests/core/data regardless of the
 # test binary's working directory when run. STYLER_THEMES_DIR follows the
 # same pattern for the committed theme corpus under themes/.

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <styler/selector.h>
 
-#include <charconv>
+#include <limits>
 #include <string>
 
 #include "detail/text.h"
@@ -9,12 +9,99 @@
 namespace styler {
 namespace {
 
+// `s` is already known to contain only ASCII digits (the caller checked via
+// find_first_not_of). Upstream parses this with std::stoi, which throws
+// std::out_of_range past INT_MAX; a hand-edited theme can write an index
+// with far more digits than any real visual tree needs
+// (e.g. `Grid[99999999999]`), which would silently overflow a naive
+// digit-by-digit accumulation (undefined behavior for `int`). Guard both the
+// digit count (an int has at most 10 digits) and the running total, and
+// throw ParseError instead - mirroring stoi's failure mode without pulling
+// in <charconv>/<stdexcept> conversions for a single-purpose parse.
 int ParseIndex(std::wstring_view s) {
-    int value = 0;
+    constexpr size_t kMaxIntDigits = 10;  // INT_MAX = 2147483647, 10 digits.
+    if (s.empty() || s.size() > kMaxIntDigits) {
+        throw ParseError("Bad target syntax, index out of range");
+    }
+    long long value = 0;
     for (wchar_t c : s) {
         value = value * 10 + (c - L'0');
+        if (value > std::numeric_limits<int>::max()) {
+            throw ParseError("Bad target syntax, index out of range");
+        }
     }
-    return value;
+    return static_cast<int>(value);
+}
+
+// Mirrors upstream's per-chain validations (AddElementCustomizationRulesFor-
+// SingleTarget, vendor/upstream/...:18859-18917), applied here to `parts` in
+// the same left-to-right (leftmost ancestor first, matched element last)
+// order ParseSelector already builds. Traversed back-to-front (matched
+// element first) to match upstream's rbegin/rend walk exactly, since
+// "adjacent to another '*'" and "first" are defined relative to that order.
+//
+// Deliberately NOT ported: upstream's ":root' must be followed by a
+// non-wildcard target part" (same function, prevIsWildcard branch under
+// Kind::Root). Zero shipped chains put '*' immediately after ':root', so it
+// is out of this fix's measured scope; adding it is future work, not a
+// silent gap - see docs/superpowers/specs, spec §7.6.
+void ValidateChainStructure(const std::vector<ElementMatcher>& parts) {
+    const size_t n = parts.size();
+    bool has_visual_state_group = false;
+
+    for (size_t idx = 0; idx < n; ++idx) {
+        size_t i = n - 1 - idx;  // n-1, n-2, ..., 0: matched element first.
+        const auto& matcher = parts[i];
+        bool is_first = (i == n - 1);       // The matched (last) element.
+        bool is_leftmost = (i == 0);
+        bool prev_is_wildcard =
+            (i + 1 < n) && parts[i + 1].kind == ElementMatcher::Kind::Wildcard;
+
+        switch (matcher.kind) {
+            case ElementMatcher::Kind::Wildcard:
+                if (is_first) {
+                    throw ParseError(
+                        "Bad target syntax, '*' can't be the matched "
+                        "element");
+                }
+                if (is_leftmost) {
+                    throw ParseError(
+                        "Bad target syntax, '*' can't be the leftmost "
+                        "target part");
+                }
+                if (prev_is_wildcard) {
+                    throw ParseError(
+                        "Bad target syntax, '*' can't be adjacent to "
+                        "another '*'");
+                }
+                break;
+
+            case ElementMatcher::Kind::Root:
+                if (is_first) {
+                    throw ParseError(
+                        "Bad target syntax, ':root' can't be the matched "
+                        "element");
+                }
+                if (!is_leftmost) {
+                    throw ParseError(
+                        "Bad target syntax, ':root' must be the leftmost "
+                        "target part");
+                }
+                break;
+
+            default:
+                break;
+        }
+
+        if (matcher.visual_state_group.has_value()) {
+            if (has_visual_state_group) {
+                throw ParseError(
+                    "Element type can't have more than one visual state "
+                    "group");
+            }
+            has_visual_state_group = true;
+        }
+    }
 }
 
 }  // namespace
@@ -114,6 +201,11 @@ std::vector<ElementMatcher> ParseSelector(std::wstring_view str) {
     // spaces (e.g. "Grid>Rectangle") while protecting '>' inside property
     // filters (e.g. "Grid[Tag=A>B]"). Behavior on all 2396 shipped selectors
     // is identical to both strategies.
+    //
+    // The depth guard below is `<= 0`, not `== 0`: an unmatched ']' (e.g.
+    // hand-edited "Grid]>Rectangle") drives depth negative, and `== 0` would
+    // never see zero again, so the whole string collapses into one matcher
+    // that can never match anything instead of splitting at the stray '>'.
     std::vector<ElementMatcher> parts;
 
     size_t pos = 0;
@@ -126,7 +218,7 @@ std::vector<ElementMatcher> ParseSelector(std::wstring_view str) {
                 ++bracket_depth;
             } else if (str[i] == L']') {
                 --bracket_depth;
-            } else if (str[i] == L'>' && bracket_depth == 0) {
+            } else if (str[i] == L'>' && bracket_depth <= 0) {
                 sep = i;
                 break;
             }
@@ -142,6 +234,7 @@ std::vector<ElementMatcher> ParseSelector(std::wstring_view str) {
         pos = sep + 1;
     }
 
+    ValidateChainStructure(parts);
     return parts;
 }
 

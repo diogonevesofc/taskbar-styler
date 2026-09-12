@@ -126,14 +126,17 @@ def test_accepts_an_at_sign_in_constant_names():
     assert pairs["Accent1@Dark"] == "{ThemeResource SystemAccentColorLight3}"
 
 
-def test_does_not_trim_constant_values():
-    """Ruling 10: the JSON is a faithful transliteration, so Task 6's
-    byte-for-byte round-trip stays possible. Trimming belongs to constant
-    resolution in the TAP (Plano 2), not to this converter. `mainRadius =
-    8` (with the surrounding spaces) is one of 64 real entries in the
-    vendored source that have whitespace around '='; the value must come
-    out as ' 8', not '8'."""
-    assert ex._split_pairs(["mainRadius = 8"])["mainRadius"] == " 8"
+def test_trims_constant_values():
+    """Corrected Ruling 10: upstream trims both sides of a constant/
+    resourceVariable entry (TrimStringView on `key` and `valueRaw`,
+    vendor:18584-18585, 19028-19029, 19042), so the value must be trimmed
+    too, symmetrically with the key. `mainRadius = 8` (with the surrounding
+    spaces) is one of 64 real entries in the vendored source that have
+    whitespace around '='; the value must come out as '8', not ' 8'. This
+    does not touch Task 6's byte-for-byte round-trip: `emit_theme_table`
+    reads `table.constants`/`table.resource_variables` (the raw literal
+    lists) directly, never this split map."""
+    assert ex._split_pairs(["mainRadius = 8"])["mainRadius"] == "8"
 
 
 def test_span_covers_the_whole_statement():

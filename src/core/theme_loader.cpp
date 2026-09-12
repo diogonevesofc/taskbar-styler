@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <styler/theme_loader.h>
 
+#include <cstdint>
 #include <fstream>
+#include <limits>
 #include <sstream>
 
 #include <nlohmann/json.hpp>
@@ -47,8 +49,19 @@ std::map<std::wstring, std::wstring> OptionalMap(const json& obj,
 }  // namespace
 
 Theme LoadThemeFromJson(std::string_view utf8) {
-    json doc = json::parse(utf8, nullptr, false);
-    if (doc.is_discarded() || !doc.is_object()) {
+    json doc;
+    try {
+        doc = json::parse(utf8);
+    } catch (const json::parse_error& e) {
+        // The two-argument json::parse(utf8, nullptr, false) form discards
+        // nlohmann's own line/byte-offset diagnostic and collapses every
+        // syntax error into the same generic message below. Themes are
+        // hand-edited JSON, so that diagnostic - which file, which line,
+        // what nlohmann actually choked on - is the whole point of the
+        // error; forward it instead of discarding it.
+        throw ParseError(std::string("Theme is not valid JSON: ") + e.what());
+    }
+    if (!doc.is_object()) {
         throw ParseError("Theme is not a JSON object");
     }
 
@@ -56,7 +69,12 @@ Theme LoadThemeFromJson(std::string_view utf8) {
     theme.id = RequiredString(doc, "id");
     theme.name = RequiredString(doc, "name");
 
-    if (auto it = doc.find("author"); it != doc.end() && it->is_string()) {
+    // Fails closed like every other field: a present-but-non-string `author`
+    // (e.g. a number or object) is a malformed theme, not an absent one.
+    if (auto it = doc.find("author"); it != doc.end() && !it->is_null()) {
+        if (!it->is_string()) {
+            throw ParseError("Field must be a string: author");
+        }
         theme.author = Utf8ToWide(it->get<std::string>());
     }
 
@@ -168,7 +186,15 @@ Theme LoadThemeFromJson(std::string_view utf8) {
         if (fid == it->end() || !fid->is_number_unsigned()) {
             throw ParseError("osFeatureVariant.featureId must be a number");
         }
-        variant.feature_id = fid->get<std::uint32_t>();
+        // get<uint32_t>() would silently narrow: nlohmann truncates instead
+        // of throwing, so 4294967296 (2^32) becomes 0 instead of failing
+        // closed. Read as the widest unsigned type and range-check first.
+        auto raw = fid->get<std::uint64_t>();
+        if (raw > std::numeric_limits<std::uint32_t>::max()) {
+            throw ParseError(
+                "osFeatureVariant.featureId out of range for a 32-bit value");
+        }
+        variant.feature_id = static_cast<std::uint32_t>(raw);
         variant.theme_id = RequiredString(*it, "themeId");
         theme.os_feature_variant = std::move(variant);
     }

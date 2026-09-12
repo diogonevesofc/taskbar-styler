@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <doctest/doctest.h>
 
+#include <initializer_list>
 #include <string>
 
 #include <styler/utf.h>
@@ -58,6 +59,14 @@ TEST_CASE("replaces out-of-range and overlong sequences with U+FFFD") {
     CHECK(Utf8ToWide(Bytes({0xC0, 0xAF})) == std::wstring(1, L'\xFFFD'));
 }
 
+TEST_CASE("replaces a UTF-8-encoded surrogate code point with U+FFFD") {
+    // 3-byte encoding of U+D800, a lone high surrogate. UTF-8 must never
+    // encode a surrogate code point directly. This is the third of the
+    // guard's three rejection classes (overlong, surrogate, out-of-range);
+    // the other two are covered above.
+    CHECK(Utf8ToWide(Bytes({0xED, 0xA0, 0x80})) == std::wstring(1, L'\xFFFD'));
+}
+
 TEST_CASE("a sequence truncated at end of input keeps the preceding text") {
     // 'a' then a 3-byte lead byte with only one of its two continuation
     // bytes present.
@@ -65,11 +74,33 @@ TEST_CASE("a sequence truncated at end of input keeps the preceding text") {
     CHECK(result == std::wstring(L"a\xFFFD\xFFFD"));
 }
 
-TEST_CASE("a bad continuation byte does not cascade into later text") {
+// Despite the old name ("a bad continuation byte does not cascade into
+// later text"), this case never reaches the per-byte continuation check at
+// all: 0xE9 is a 3-byte lead byte demanding 2 more bytes, but only one byte
+// ('m') remains before the end of input, so the truncation guard
+// (`i + extra >= size`) fires first. What this actually proves is that a
+// lead byte too close to the end of input is treated as truncated rather
+// than reading past the end or misreading trailing text as its
+// continuation bytes.
+TEST_CASE("a lead byte too close to the end of input is truncated, not misread") {
     // "Ningu" + a lone Latin-1 'é' byte (0xE9) fed as if it were UTF-8,
     // followed by 'm'. The trailing 'm' must survive intact.
     auto result = Utf8ToWide(Bytes({'N', 'i', 'n', 'g', 'u', 0xE9, 'm'}));
     CHECK(result == std::wstring(L"Ningu\xFFFDm"));
+}
+
+// The real "bad continuation byte mid-sequence" case, with plenty of bytes
+// remaining before the end of input: 0xE2 is a 3-byte lead byte, but '('
+// (0x28) is not a continuation byte, so decoding fails after just one byte
+// (k=1). The code sets `extra = k - 1` (here 0) instead of skipping the two
+// bytes it expected, so the byte that broke the sequence is RESCANNED as
+// the start of the next character rather than being swallowed.
+TEST_CASE("a bad continuation byte mid-sequence rescans from the offending byte") {
+    auto result = Utf8ToWide(Bytes({0xE2, 0x28, 0xA1}));
+    // 0xE2 -> U+FFFD (bad continuation). '(' is rescanned as plain ASCII.
+    // 0xA1 is then read fresh as a lead byte, but it is itself invalid as
+    // one (a lone continuation-shaped byte) -> U+FFFD.
+    CHECK(result == std::wstring(L"\xFFFD(\xFFFD"));
 }
 
 TEST_CASE("an unpaired high surrogate does not crash WideToUtf8") {

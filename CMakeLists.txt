@@ -9,9 +9,13 @@ option(TASKBAR_STYLER_BUILD_TESTS "Build unit tests" ON)
 
 include(FetchContent)
 
+# GIT_TAG is pinned to the full commit SHA the v3.11.3 tag resolves to
+# (verified via `git ls-remote --tags`), not the mutable tag name: a tag can
+# be force-moved upstream, which would change what every future `cmake
+# --fresh` configure fetches without this file changing at all.
 FetchContent_Declare(nlohmann_json
   GIT_REPOSITORY https://github.com/nlohmann/json.git
-  GIT_TAG v3.11.3)
+  GIT_TAG 9cca280a4d0ccf0c08f47a99aa71d1b0e52f8d03)  # v3.11.3
 FetchContent_MakeAvailable(nlohmann_json)
 
 add_subdirectory(src/core)
@@ -19,7 +23,7 @@ add_subdirectory(src/core)
 if(TASKBAR_STYLER_BUILD_TESTS)
   FetchContent_Declare(doctest
     GIT_REPOSITORY https://github.com/doctest/doctest.git
-    GIT_TAG v2.4.11)
+    GIT_TAG ae7a13539fb71f270b87eb2e874fbac80bc8dda2)  # v2.4.11
   # doctest v2.4.11 declares cmake_minimum_required(VERSION 3.0), which newer
   # CMake releases (4.0+) reject outright. CMAKE_POLICY_VERSION_MINIMUM lets
   # CMake apply policies as if the minimum were this version instead, without

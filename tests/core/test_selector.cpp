@@ -189,3 +189,63 @@ TEST_CASE("returns an empty result when every chain of a target is ambiguous") {
     auto groups = ParseSelectorGroups(L"Grid#A#B");
     CHECK(groups.empty());
 }
+
+// F2: ParseIndex must guard against signed overflow instead of invoking UB.
+// Upstream's std::stoi throws std::out_of_range past INT_MAX; a hand-edited
+// theme is free to write far more digits than any real visual tree index.
+TEST_CASE("an out-of-range numeric index throws instead of overflowing") {
+    CHECK_THROWS_AS(ParseElementMatcher(L"Grid[99999999999]"), ParseError);
+    // One past INT_MAX (2147483647): still 10 digits, must still throw.
+    CHECK_THROWS_AS(ParseElementMatcher(L"Grid[2147483648]"), ParseError);
+    // INT_MAX itself is the boundary and must still parse.
+    auto m = ParseElementMatcher(L"Grid[2147483647]");
+    CHECK(m.one_based_index == 2147483647);
+}
+
+// F2: the bracket-depth guard must be `<= 0`, not `== 0`. An unmatched ']'
+// drives depth negative; `== 0` never sees zero again and the whole string
+// collapses into one never-matching matcher instead of splitting at '>'.
+TEST_CASE("an unmatched ']' does not swallow the '>' separator that follows") {
+    auto parts = ParseSelector(L"Grid]>Rectangle");
+    REQUIRE(parts.size() == 2);
+    CHECK(parts[0].type == L"Grid]");
+    CHECK(parts[1].type == L"Rectangle");
+}
+
+// F3: the 6 upstream chain validations from AddElementCustomizationRulesFor-
+// SingleTarget (vendor/upstream/...:18859-18917), one TEST_CASE per rule.
+// Measured against the real corpus: 0 of 3123 shipped chains violate any of
+// these, so none of this changes behavior on a single shipped theme.
+
+TEST_CASE("'*' cannot be the matched (last) element of a chain") {
+    CHECK_THROWS_AS(ParseSelector(L"Grid > *"), ParseError);
+}
+
+TEST_CASE("'*' cannot be the leftmost part of a chain") {
+    CHECK_THROWS_AS(ParseSelector(L"* > Grid > Rectangle"), ParseError);
+}
+
+TEST_CASE("'*' cannot be adjacent to another '*'") {
+    CHECK_THROWS_AS(ParseSelector(L"Grid > * > * > Rectangle"), ParseError);
+}
+
+TEST_CASE(":root cannot be the matched (last) element of a chain") {
+    CHECK_THROWS_AS(ParseSelector(L"Grid > :root"), ParseError);
+}
+
+TEST_CASE(":root must be the leftmost part of a chain") {
+    CHECK_THROWS_AS(ParseSelector(L"Grid > :root > Rectangle"), ParseError);
+    // Leftmost is fine.
+    auto parts = ParseSelector(L":root > Grid > Rectangle");
+    REQUIRE(parts.size() == 3);
+    CHECK(parts[0].kind == ElementMatcher::Kind::Root);
+}
+
+TEST_CASE("at most one visual-state-group is allowed per chain") {
+    CHECK_THROWS_AS(
+        ParseSelector(L"Button@CommonStates > Grid@OtherStates"), ParseError);
+    // One visual state group total is fine, even split across the chain.
+    auto parts = ParseSelector(L"Grid > Button@CommonStates");
+    REQUIRE(parts.size() == 2);
+    CHECK(parts[1].visual_state_group == std::wstring(L"CommonStates"));
+}

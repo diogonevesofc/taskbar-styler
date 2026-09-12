@@ -1,0 +1,11 @@
+File: windows-11-taskbar-styler.wh.cpp
+
+Source: https://github.com/ramensoftware/windhawk-mods/blob/main/mods/windows-11-taskbar-styler.wh.cpp
+Author: m417z <https://m417z.com/>
+License: GPL-3.0-or-later (per repository)
+
+Downloaded: 2026-09-12
+Lines: 20409
+Modifications: none. Vendored unmodified; the line count above is the check
+used elsewhere in this repo (extractor and test guards) to detect any drift
+from this exact download.

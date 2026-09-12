@@ -2,6 +2,7 @@
 #include <doctest/doctest.h>
 
 #include <filesystem>
+#include <string>
 
 #include <styler/theme_loader.h>
 #include <styler/utf.h>
@@ -170,7 +171,10 @@ TEST_CASE("fails closed on malformed input") {
 // literal. In the real data, 85 references are embedded mid-value and 10
 // don't resolve against any constant — throwing here would reject the
 // Luminosity_variant_Dock, Luminosity_variant_Compact and Fluid themes.
-// Resolution belongs to the TAP, in Plano 2.
+// Resolution happens at apply time, not load time: implemented in
+// styler_core (spec §4.3 assigns constant resolution to the core, since it
+// is pure string substitution and the most testable function upstream has),
+// called by the TAP.
 TEST_CASE("accepts an unresolved constant reference, like upstream does") {
     auto theme = LoadThemeFromJson(R"({
       "id": "T", "name": "T",
@@ -206,4 +210,39 @@ TEST_CASE("loads a theme from a file on disk") {
 TEST_CASE("throws when the theme file does not exist") {
     auto path = std::filesystem::path(STYLER_TEST_DATA_DIR) / "does_not_exist.json";
     CHECK_THROWS_AS(LoadThemeFromFile(path), ParseError);
+}
+
+// F4: three fail-open holes in a loader that advertises fail-closed.
+
+TEST_CASE("a non-string author fails closed like every other field") {
+    CHECK_THROWS_AS(LoadThemeFromJson(R"({
+      "id": "T", "name": "T", "author": 42, "rules": []
+    })"), ParseError);
+}
+
+TEST_CASE("a featureId past uint32 range fails closed instead of narrowing") {
+    CHECK_THROWS_AS(LoadThemeFromJson(R"({
+      "id": "Squircle", "name": "Squircle", "rules": [],
+      "osFeatureVariant": { "featureId": 4294967296, "themeId": "X" }
+    })"), ParseError);
+    // The boundary value itself (uint32 max) must still load.
+    auto theme = LoadThemeFromJson(R"({
+      "id": "Squircle", "name": "Squircle", "rules": [],
+      "osFeatureVariant": { "featureId": 4294967295, "themeId": "X" }
+    })");
+    CHECK(theme.os_feature_variant->feature_id == 4294967295u);
+}
+
+TEST_CASE("a JSON syntax error forwards nlohmann's own diagnostic") {
+    try {
+        LoadThemeFromJson("{ \"id\": \"T\", ");
+        FAIL("expected a ParseError");
+    } catch (const ParseError& e) {
+        // Before this fix every syntax error collapsed into "Theme is not a
+        // JSON object" - the fixed message below is unreachable for
+        // malformed JSON, since is_object() is never reached.
+        std::string what = e.what();
+        CHECK(what != "Theme is not a JSON object");
+        CHECK(what.find("Theme is not valid JSON") != std::string::npos);
+    }
 }

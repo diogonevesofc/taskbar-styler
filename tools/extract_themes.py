@@ -2,8 +2,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Converts the upstream mod's C++ theme tables to JSON, and back.
 
-The `emit` mode exists for the round-trip: if emit(convert(x)) == x byte for
-byte, the conversion is provably lossless.
+The `roundtrip` command exists to prove the conversion is lossless: it
+reconstructs each table with the internal `emit_theme_table` function and
+checks emit(parse(x)) == x byte for byte. There is no standalone `emit` CLI
+mode - only `convert` (C++ -> JSON) and `roundtrip` are exposed.
 """
 from __future__ import annotations
 
@@ -205,13 +207,15 @@ def _split_pairs(entries: list[str]) -> dict[str, str]:
             raise ValueError(f"constant without '=': {entry!r}")
         key, value = entry.split("=", 1)
         key = key.strip()
-        # `value` is intentionally NOT stripped/trimmed. Some upstream
-        # entries have spaces around '=' (e.g. `L"mainRadius = 8"`), and the
-        # JSON's contract is a faithful transliteration of the source: that
-        # is what makes Task 6's byte-for-byte round-trip possible. Trimming
-        # here would destroy information needed to reconstruct the original
-        # bytes. Any whitespace-insensitive constant *resolution* belongs to
-        # the runtime TAP (Plano 2), not to this converter.
+        value = value.strip()
+        # Upstream trims both sides of a constant/resourceVariable entry
+        # (TrimStringView on both `key` and `valueRaw`, vendor:18584-18585,
+        # 19028-19029, 19042) - trimming the value here just matches that,
+        # symmetrically with the key strip two lines up. This does NOT touch
+        # `emit_theme_table`'s round-trip: that function reads
+        # `table.constants` / `table.resource_variables` directly (the raw
+        # literal lists), never this split map, so trimming here changes zero
+        # bytes of the round-trip's output.
         # A real constant name is a plain identifier. Entries mangled to
         # have no top-level '=' (see test_rejects_a_constant_without_equals)
         # still contain a later '=' nested in an attribute (e.g.

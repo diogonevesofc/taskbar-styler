@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <styler/utf.h>
 
-#include <cstdint>
-
 namespace styler {
 
 std::wstring Utf8ToWide(std::string_view utf8) {

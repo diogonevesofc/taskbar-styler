@@ -140,7 +140,7 @@ Um arquivo por tema, `themes/<Id>.json`:
 ```json
 {
   "id": "TranslucentTaskbar",
-  "name": "Translucent Taskbar",
+  "name": "TranslucentTaskbar",
   "author": "<preenchido pelo conversor a partir do readme upstream>",
   "constants": {
     "CommonBgBrush": "<WindhawkBlur BlurAmount=\"18\" TintColor=\"#25323232\"/>"
@@ -158,6 +158,10 @@ Um arquivo por tema, `themes/<Id>.json`:
   ]
 }
 ```
+
+`"name"` sempre é igual a `"id"`: o conversor (`to_theme_json`) preenche os dois com o mesmo
+valor para os 55 temas, porque o mod upstream não tem outra fonte de nome legível por humano —
+não há um "nome bonito" separado para preencher.
 
 ### 5.2 `target` e `styles` permanecem strings opacas
 
@@ -193,19 +197,22 @@ e o do TAP. Mantendo string:
 
 ### 5.4 O conversor e sua verificação
 
-`tools/convert_themes.py` tem dois modos:
+`tools/extract_themes.py` tem dois comandos de CLI:
 
 - `convert` — tabelas C++ → 55 JSONs;
-- `emit` — JSON → literal C++ no formato do original.
+- `roundtrip` — prova que a conversão é sem perda: reconstrói cada tabela com a função interna
+  `emit_theme_table` e compara byte a byte com o trecho original.
 
-**Se `emit(convert(fonte))` bate byte a byte com o trecho original, a conversão é
-comprovadamente sem perda.** Isso transforma "a conversão está fiel?" de julgamento em `diff`.
-É o primeiro teste escrito e roda no CI.
+**Se `emit_theme_table(parse_source(fonte))` bate byte a byte com o trecho original, a
+conversão é comprovadamente sem perda.** Isso transforma "a conversão está fiel?" de
+julgamento em `diff`. É o primeiro teste escrito e roda no CI.
 
 ### 5.5 Parser JSON
 
-Single-header vendorizado (nlohmann/json, MIT — compatível com GPLv3). Um tema por vez; o
-maior tem ~390 regras. Custo de parse irrelevante.
+nlohmann/json (MIT — compatível com GPLv3), buscado via `FetchContent` do CMake em tempo de
+configuração, com `GIT_TAG` fixado no commit SHA completo correspondente à tag `v3.11.3` (não
+a tag em si, que é mutável) — não é um single-header vendorizado no repositório. Um tema por
+vez; o maior tem ~390 regras. Custo de parse irrelevante.
 
 ## 6. Ciclo de vida
 
@@ -404,7 +411,7 @@ src/core/               styler_core — parsers, sem Windows
 src/tap/                a DLL; tap_boundary.cpp isola as entradas COM
 src/tray/               C# .NET 10
 themes/                 55 arquivos JSON (54 selecionáveis + a variante do Squircle)
-tools/convert_themes.py conversor + round-trip
+tools/extract_themes.py  conversor + round-trip
 tests/core/             testes unitários
 docs/smoke-test.md      checklist manual
 .github/workflows/ci.yml
