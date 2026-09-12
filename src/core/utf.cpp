@@ -14,18 +14,24 @@ std::wstring Utf8ToWide(std::string_view utf8) {
         auto b0 = static_cast<unsigned char>(utf8[i]);
         char32_t cp = 0;
         size_t extra = 0;
+        char32_t min_cp = 0;  // Minimum valid code point for this sequence
+                               // length; 0 for ASCII and invalid lead bytes,
+                               // which need no overlong check below.
 
         if (b0 < 0x80) {
             cp = b0;
         } else if ((b0 & 0xE0) == 0xC0) {
             cp = b0 & 0x1F;
             extra = 1;
+            min_cp = 0x80;
         } else if ((b0 & 0xF0) == 0xE0) {
             cp = b0 & 0x0F;
             extra = 2;
+            min_cp = 0x800;
         } else if ((b0 & 0xF8) == 0xF0) {
             cp = b0 & 0x07;
             extra = 3;
+            min_cp = 0x10000;
         } else {
             cp = 0xFFFD;
         }
@@ -43,6 +49,22 @@ std::wstring Utf8ToWide(std::string_view utf8) {
                 break;
             }
             cp = (cp << 6) | (bk & 0x3F);
+        }
+
+        // Reject anything that is not a well-formed scalar value, replacing
+        // it with U+FFFD instead of emitting it: (1) overlong encodings — a
+        // decoded code point below the minimum for the sequence length that
+        // produced it (0x80 for 2-byte, 0x800 for 3-byte, 0x10000 for
+        // 4-byte), which can smuggle e.g. an embedded NUL or '/' past a
+        // caller filtering on the decoded string; (2) surrogate code points
+        // (0xD800-0xDFFF), which UTF-8 must never encode directly; and
+        // (3) values beyond the Unicode range (> 0x10FFFF), which malformed
+        // 4-byte lead bytes (0xF5-0xF7) or their continuations can produce.
+        // This is a no-op when cp is already 0xFFFD from the checks above.
+        if (min_cp != 0 &&
+            (cp < min_cp || (cp >= 0xD800 && cp <= 0xDFFF) ||
+             cp > 0x10FFFF)) {
+            cp = 0xFFFD;
         }
 
         i += extra + 1;

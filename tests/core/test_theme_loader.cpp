@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <doctest/doctest.h>
 
+#include <filesystem>
+
 #include <styler/theme_loader.h>
 #include <styler/utf.h>
 
+using styler::LoadThemeFromFile;
 using styler::LoadThemeFromJson;
 using styler::ParseError;
 using styler::ValueRule;
@@ -89,4 +92,22 @@ TEST_CASE("accepts a constant embedded mid-value") {
       "rules": [ { "target": "Grid", "styles": ["Margin=0,0,$Gap,0"] } ]
     })");
     CHECK(std::get<ValueRule>(theme.rules[0].styles[0]).value == L"0,0,$Gap,0");
+}
+
+TEST_CASE("loads a theme from a file on disk") {
+    auto path = std::filesystem::path(STYLER_TEST_DATA_DIR) / "valid_theme.json";
+    auto theme = LoadThemeFromFile(path);
+
+    CHECK(theme.id == L"TestTheme");
+    CHECK(theme.name == L"Test Theme");
+    REQUIRE(theme.constants.count(L"Bg") == 1);
+    REQUIRE(theme.rules.size() == 1);
+    CHECK(theme.rules[0].selector.size() == 2);
+    REQUIRE(theme.rules[0].styles.size() == 2);
+    CHECK(std::get<ValueRule>(theme.rules[0].styles[0]).value == L"$Bg");
+}
+
+TEST_CASE("throws when the theme file does not exist") {
+    auto path = std::filesystem::path(STYLER_TEST_DATA_DIR) / "does_not_exist.json";
+    CHECK_THROWS_AS(LoadThemeFromFile(path), ParseError);
 }
