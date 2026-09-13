@@ -389,8 +389,11 @@ reporta. Nunca aplica pela metade — meia taskbar estilizada parece bug do Wind
 `$Nome` por prefixo em qualquer posição do valor e deixa um `$` sem correspondência passar como
 literal (`ApplyStyleConstants`, `vendor/upstream/...:18536`). Isso não é descuido: dos dados
 reais, 85 das 1567 referências estão embutidas no meio do valor, e 10 não resolvem contra
-constante alguma — os temas `Luminosity_variant_Dock`, `Luminosity_variant_Compact` e `Fluid`
-dependem desse comportamento. Validar mais estrito que o upstream rejeitaria temas que
+constante alguma. Apenas o tema `Fluid` depende de fato do passthrough de um `$` sem
+correspondência; `Luminosity_variant_Dock` e `Luminosity_variant_Compact` referenciam
+`$WidgetGap57`, que a regra de prefixo mais longo do upstream (`LoadStyleConstants`,
+`vendor/upstream/...:18580`) resolve como `WidgetGap` + o literal `57`, sem sobrar `$` algum.
+Validar mais estrito que o upstream rejeitaria temas que
 funcionam hoje. A resolução acontece na aplicação, não na carga.
 
 **Duas exceções deliberadas por regra: falha aquela regra, não o tema — e é reportada.**

@@ -79,9 +79,11 @@ TEST_CASE("every shipped theme resolves constants exactly as upstream would") {
 }
 
 TEST_CASE("only the three known themes keep an unresolved dollar") {
-    // Spec section 7.6: Luminosity_variant_Dock, Luminosity_variant_Compact
-    // and Fluid reference names no constant defines; upstream lets those
-    // through as literals.
+    // Spec section 7.6's tolerance for an unmatched `$` is what Fluid
+    // relies on. Luminosity_variant_Dock and Luminosity_variant_Compact
+    // reference $WidgetGap57, which upstream's longest-prefix rule resolves
+    // as WidgetGap + a literal "57" (vendor LoadStyleConstants,
+    // ApplyStyleConstants) - so they are not in this set.
     std::set<std::wstring> with_unresolved;
     for (const auto& entry :
          std::filesystem::directory_iterator(STYLER_THEMES_DIR)) {
@@ -100,7 +102,5 @@ TEST_CASE("only the three known themes keep an unresolved dollar") {
             }
         }
     }
-    CHECK(with_unresolved ==
-          std::set<std::wstring>{L"Luminosity_variant_Dock",
-                                 L"Luminosity_variant_Compact", L"Fluid"});
+    CHECK(with_unresolved == std::set<std::wstring>{L"Fluid"});
 }
