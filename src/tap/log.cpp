@@ -13,7 +13,8 @@ namespace styler::tap {
 namespace {
 
 // Info-level events (SetSite, "loaded into ...") fire once per load, not per
-// element - the hot path (OnVisualTreeChange) logs at Debug, which stays
+// element - the hot path (the tree_export.cpp snapshot walk, hundreds of
+// elements per export) would log at Debug if it ever needed to, which stays
 // gated by this default. Nothing needs Error-only protection, so Info is
 // the default rather than something opt-in.
 std::atomic<LogLevel> g_level{LogLevel::Info};

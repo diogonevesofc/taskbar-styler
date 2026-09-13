@@ -10,8 +10,8 @@ enum class LogLevel { Error = 0, Info = 1, Debug = 2 };
 void SetLogLevel(LogLevel level);
 LogLevel GetLogLevel();
 
-// Called on the hot path: OnVisualTreeChange fires once per element, hundreds
-// of times when the taskbar opens. Must stay a plain integer comparison.
+// Called on the hot path: the visual tree snapshot (tree_export.cpp) walks
+// hundreds of elements per export. Must stay a plain integer comparison.
 bool LogEnabled(LogLevel level);
 
 void LogLine(LogLevel level, std::wstring_view line);

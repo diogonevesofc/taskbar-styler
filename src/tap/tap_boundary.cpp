@@ -24,10 +24,12 @@
 
 #include <atomic>
 #include <new>
+#include <string>
 
 #include <tap/clsid.h>
 #include <tap/log.h>
 #include <tap/site.h>
+#include <tap/tree_export.h>
 #include <tap/visual_tree_watcher.h>
 
 namespace styler::tap {
@@ -96,6 +98,14 @@ public:
             if (FAILED(hr)) {
                 STYLER_LOG(LogLevel::Error, L"OpenDiagnostics failed 0x%08X",
                            static_cast<unsigned>(hr));
+            } else {
+                wchar_t local[MAX_PATH]{};
+                DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH);
+                if (n > 0 && n < MAX_PATH) {
+                    std::wstring out = std::wstring(local) +
+                                        L"\\TaskbarStyler\\visual-tree.txt";
+                    ExportTreeToFile(out);
+                }
             }
         } catch (...) {
             STYLER_LOG(LogLevel::Error, L"SetSite threw");

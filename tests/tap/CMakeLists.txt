@@ -1,6 +1,7 @@
 add_executable(taskbar_styler_tap_tests
   test_log.cpp
   test_loader.cpp
+  test_tree_format.cpp
   ${CMAKE_SOURCE_DIR}/src/cli/loader.cpp
 )
 target_include_directories(taskbar_styler_tap_tests PRIVATE
