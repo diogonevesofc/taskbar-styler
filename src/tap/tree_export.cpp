@@ -181,13 +181,22 @@ HRESULT ExportTreeToFile(const std::wstring& path) {
     HRESULT unadvise_hr = service->UnadviseVisualTreeChange(callback);
     service->Release();
 
-    bool leak_callback = FAILED(unadvise_hr);
-    if (leak_callback) {
+    if (FAILED(unadvise_hr)) {
         STYLER_LOG(LogLevel::Error,
                    L"UnadviseVisualTreeChange failed 0x%08X - leaking the "
                    L"snapshot callback, XAML may still call into it",
                    static_cast<unsigned>(unadvise_hr));
-    } else {
+        // XAML may still hold `callback` and may still be writing into its
+        // vectors from another island's thread, so nothing below may touch
+        // it - not to release its handles, not to delete it, not even to
+        // read reported.size() for a log line. Leave now, before
+        // ReleaseOnExit exists, so it cannot either. The export is worthless
+        // without a clean Unadvise anyway; the leaked handles and object are
+        // the price of not crashing the shell.
+        return unadvise_hr;
+    }
+
+    {
         // Synchronizes with whichever thread last wrote into `callback` -
         // this thread's own Advise call, or a concurrent mutation on
         // another XAML island's thread during the Advise/Unadvise window
@@ -210,7 +219,6 @@ HRESULT ExportTreeToFile(const std::wstring& path) {
     // outside any callback.
     struct ReleaseOnExit {
         SnapshotCallback* callback;
-        bool leak_callback;
 
         ~ReleaseOnExit() {
             // A destructor is implicitly noexcept: letting anything escape
@@ -221,13 +229,6 @@ HRESULT ExportTreeToFile(const std::wstring& path) {
             // shell. Losing the log line, or even a handle release, is a
             // far smaller failure than that.
             try {
-                if (leak_callback) {
-                    // XAML may still hold `callback` and may still be
-                    // writing into its vectors from another thread -
-                    // touching either one here would itself be unsafe.
-                    // Leak the whole object.
-                    return;
-                }
                 for (unsigned long long h : callback->to_release) {
                     ReleaseHandle(h);
                 }
@@ -240,7 +241,7 @@ HRESULT ExportTreeToFile(const std::wstring& path) {
             } catch (...) {
             }
         }
-    } release_on_exit{callback, leak_callback};
+    } release_on_exit{callback};
 
     if (FAILED(advise_hr)) {
         STYLER_LOG(LogLevel::Error, L"AdviseVisualTreeChange failed 0x%08X",
