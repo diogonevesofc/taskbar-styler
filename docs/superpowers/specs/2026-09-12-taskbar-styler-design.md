@@ -291,8 +291,13 @@ usa para decidir o que fazer (por exemplo, `GetSite` sem site retorna `E_FAIL`, 
 quem chamou e viola o contrato COM padrão de `IObjectWithSite`). Forçar `S_OK` nesses casos
 esconderia erros sem nenhum benefício, já que eles não são o gatilho que faz o XAML calar.
 
-Essas funções ficam todas em `src/tap/tap_boundary.cpp`, para que "a fronteira está
-protegida?" se responda abrindo um arquivo.
+As entradas do `IObjectWithSite` e da fábrica COM ficam todas em
+`src/tap/tap_boundary.cpp`, para que "a fronteira está protegida?" se responda abrindo um
+arquivo. A exceção são os callbacks do instantâneo da árvore, `OnVisualTreeChange` e
+`OnElementStateChanged`, que moram em `src/tap/tree_export.cpp` junto do objeto que os
+implementa: eles só existem entre um `Advise` e o `Unadvise` seguinte, e separá-los do
+buffer que preenchem custaria mais do que a proximidade compra. A regra de conteúdo vale
+igual nos dois arquivos — catch-all, nunca propaga, `S_OK` sempre.
 
 Um estilo que falha derruba aquele elemento e nada mais: um tema com 50 regras onde 3
 quebraram aplica 47.
