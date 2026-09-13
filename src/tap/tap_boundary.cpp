@@ -28,6 +28,7 @@
 #include <tap/clsid.h>
 #include <tap/log.h>
 #include <tap/site.h>
+#include <tap/visual_tree_watcher.h>
 
 namespace styler::tap {
 
@@ -80,6 +81,7 @@ public:
                 previous->Release();
             }
             if (!site) {
+                StopWatching();
                 return S_OK;
             }
 
@@ -89,6 +91,12 @@ public:
             wchar_t host[MAX_PATH]{};
             GetModuleFileNameW(nullptr, host, MAX_PATH);
             STYLER_LOG(LogLevel::Info, L"loaded into %s", host);
+
+            HRESULT hr = StartWatching(site);
+            if (FAILED(hr)) {
+                STYLER_LOG(LogLevel::Error, L"StartWatching failed 0x%08X",
+                           static_cast<unsigned>(hr));
+            }
         } catch (...) {
             STYLER_LOG(LogLevel::Error, L"SetSite threw");
         }

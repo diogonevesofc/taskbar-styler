@@ -12,6 +12,7 @@ target_include_directories(taskbar_styler_tap_lib PUBLIC ..)
 # here, never in the static lib.
 add_library(taskbar_styler_tap MODULE
   tap_boundary.cpp
+  visual_tree_watcher.cpp
 )
 target_include_directories(taskbar_styler_tap PUBLIC ..)
 target_link_libraries(taskbar_styler_tap PRIVATE taskbar_styler_tap_lib)
