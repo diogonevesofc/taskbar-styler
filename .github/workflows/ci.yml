@@ -56,4 +56,4 @@ jobs:
       - name: Nenhuma API de injecao no codigo
         shell: bash
         run: |
-          ! grep -rnE 'VirtualAllocEx|WriteProcessMemory|CreateRemoteThread|SetThreadContext' src/
+          ! grep -rnE 'VirtualAllocEx|WriteProcessMemory|CreateRemoteThread|SetThreadContext|MinHook|Detours|MH_Initialize|DetourAttach' src/

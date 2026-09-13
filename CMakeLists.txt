@@ -1,6 +1,15 @@
 cmake_minimum_required(VERSION 3.25)
 project(taskbar_styler LANGUAGES CXX)
 
+# x64 only (Global Constraint): explorer.exe on any supported Windows 11
+# build is x64, so an x86-configured TAP DLL can never load into it - it
+# would build and the CLI would still report success, silently producing an
+# artefact that cannot do the one thing this project exists to do.
+if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+  message(FATAL_ERROR "taskbar-styler is x64-only; configure from an x64 "
+                       "developer prompt/toolset")
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)

@@ -46,6 +46,20 @@ class SnapshotCallback : public IVisualTreeServiceCallback2 {
     // value (vendor:11162-11165, :11169-11171).
     std::vector<unsigned long long> to_release;
 
+    // Guards `reported` and `to_release`. This callback is advised against
+    // the whole diagnostics session, not one XAML island: while it is
+    // registered (from inside AdviseVisualTreeChange until
+    // UnadviseVisualTreeChange returns), a mutation on ANY other island in
+    // explorer.exe - a second-monitor taskbar, an open flyout - calls
+    // OnVisualTreeChange on that island's own thread, concurrently with
+    // whichever thread is driving this export. Upstream sidesteps this by
+    // keeping its equivalent state `thread_local`
+    // (vendor/upstream/windows-11-taskbar-styler.wh.cpp:18281); this
+    // callback is one shared object, so it needs a real lock instead.
+    // ExportTreeToFile takes this exactly once, after Unadvise has
+    // returned, before its first read of either vector - see there.
+    std::mutex mutex;
+
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override {
         if (!ppv) {
             return E_POINTER;
@@ -78,7 +92,15 @@ class SnapshotCallback : public IVisualTreeServiceCallback2 {
         ParentChildRelation relation, VisualElement element,
         VisualMutationType mutationType) override {
         try {
+            std::lock_guard<std::mutex> lock(mutex);
             if (mutationType == Add) {
+                // Push both handles before `reported`: if the Reported
+                // construction or push_back below throws, both handles must
+                // still be in `to_release`, or they leak - ReleaseHandle
+                // never sees a handle this callback did not record.
+                to_release.push_back(element.Handle);
+                to_release.push_back(relation.Parent);
+
                 Reported r;
                 r.handle = element.Handle;
                 r.parent = relation.Parent;
@@ -86,9 +108,6 @@ class SnapshotCallback : public IVisualTreeServiceCallback2 {
                 r.type = element.Type ? element.Type : L"";
                 r.name = element.Name ? element.Name : L"";
                 reported.push_back(std::move(r));
-
-                to_release.push_back(element.Handle);
-                to_release.push_back(relation.Parent);
             } else {
                 // A Remove arriving inside the initial flood still hands out
                 // a real handle diagnostics expects released - it is just
@@ -147,28 +166,38 @@ HRESULT ExportTreeToFile(const std::wstring& path) {
     }
 
     HRESULT advise_hr = service->AdviseVisualTreeChange(callback);
-    bool leak_callback = false;
 
-    if (SUCCEEDED(advise_hr)) {
-        // Unadvise immediately, synchronously, before this function touches
-        // `callback` from here on: the initial flood arrives synchronously
-        // inside the Advise call above (measured), but the subscription
-        // stays live - and `callback` remains callable from a XAML island on
-        // another explorer UI thread - until Unadvise returns. Deferring
-        // Unadvise into a scope guard that only fires when this function
-        // eventually returns would leave that window open across the whole
-        // BuildForest/format/write below, racing a concurrent mutation
-        // against this thread reading callback->reported.
-        HRESULT unadvise_hr = service->UnadviseVisualTreeChange(callback);
-        if (FAILED(unadvise_hr)) {
-            STYLER_LOG(LogLevel::Error,
-                       L"UnadviseVisualTreeChange failed 0x%08X - leaking "
-                       L"the snapshot callback, XAML may still call into it",
-                       static_cast<unsigned>(unadvise_hr));
-            leak_callback = true;
-        }
-    }
+    // Unadvise unconditionally, synchronously, before this function touches
+    // `callback` from here on - harmless if Advise never actually
+    // registered the callback, and the only way to know that no more writes
+    // are coming otherwise: Advise can report several elements and *then*
+    // fail (see the FAILED(advise_hr) branch below), which registers the
+    // callback with XAML exactly as a succeeding Advise would, just as
+    // exposed to a concurrent write from another island's thread. Deferring
+    // Unadvise into a scope guard that only fires when this function
+    // eventually returns would leave that window open across the whole
+    // BuildForest/format/write below, racing a concurrent mutation against
+    // this thread reading callback->reported.
+    HRESULT unadvise_hr = service->UnadviseVisualTreeChange(callback);
     service->Release();
+
+    bool leak_callback = FAILED(unadvise_hr);
+    if (leak_callback) {
+        STYLER_LOG(LogLevel::Error,
+                   L"UnadviseVisualTreeChange failed 0x%08X - leaking the "
+                   L"snapshot callback, XAML may still call into it",
+                   static_cast<unsigned>(unadvise_hr));
+    } else {
+        // Synchronizes with whichever thread last wrote into `callback` -
+        // this thread's own Advise call, or a concurrent mutation on
+        // another XAML island's thread during the Advise/Unadvise window
+        // (see the mutex member's own comment). One acquire-then-release is
+        // enough: Unadvise having succeeded means no further write can
+        // start, so every read of `reported`/`to_release` from here on,
+        // including inside ReleaseOnExit's destructor below, is safe
+        // without holding the lock again.
+        std::lock_guard<std::mutex> lock(callback->mutex);
+    }
 
     // Scope guard covering every exit from here down, including an
     // exception unwinding out of BuildForest/AssignSiblingIndices/the
@@ -176,24 +205,40 @@ HRESULT ExportTreeToFile(const std::wstring& path) {
     // including Advise itself having reported some elements before
     // ultimately returning a failure HRESULT. Makes the handle release
     // structural instead of dependent on every return statement remembering
-    // it, and - since Unadvise (if it ran at all) already completed above,
-    // synchronously, before this guard was even constructed - always fires
-    // after Unadvise, outside any callback.
+    // it, and - since Unadvise already completed above, synchronously,
+    // before this guard was even constructed - always fires after Unadvise,
+    // outside any callback.
     struct ReleaseOnExit {
         SnapshotCallback* callback;
         bool leak_callback;
 
         ~ReleaseOnExit() {
-            if (leak_callback) {
-                // XAML may still hold `callback` and may still be writing
-                // into its vectors from another thread - touching either
-                // one here would itself be unsafe. Leak the whole object.
-                return;
+            // A destructor is implicitly noexcept: letting anything escape
+            // - e.g. STYLER_LOG inside ReleaseHandle allocating while a
+            // bad_alloc from BuildForest/the wstring appends is already
+            // unwinding through here - calls std::terminate and kills
+            // explorer.exe outright, turning a survivable OOM into a killed
+            // shell. Losing the log line, or even a handle release, is a
+            // far smaller failure than that.
+            try {
+                if (leak_callback) {
+                    // XAML may still hold `callback` and may still be
+                    // writing into its vectors from another thread -
+                    // touching either one here would itself be unsafe.
+                    // Leak the whole object.
+                    return;
+                }
+                for (unsigned long long h : callback->to_release) {
+                    ReleaseHandle(h);
+                }
+                delete callback;
+                // ReleasedHandleCount() otherwise has no caller anywhere in
+                // the codebase, so it confirms nothing - this is what makes
+                // the spec section 7.2 leak observable actually observed.
+                STYLER_LOG(LogLevel::Info, L"handles released so far: %ld",
+                           ReleasedHandleCount());
+            } catch (...) {
             }
-            for (unsigned long long h : callback->to_release) {
-                ReleaseHandle(h);
-            }
-            delete callback;
         }
     } release_on_exit{callback, leak_callback};
 

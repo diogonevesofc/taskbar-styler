@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <tap/thread_init.h>
 
+#include <atomic>
 #include <cwchar>
 
 #include <tap/log.h>
@@ -9,11 +10,12 @@ namespace styler::tap {
 namespace {
 
 thread_local bool t_initialized = false;
-HWINEVENTHOOK g_host_hook = nullptr;
+std::atomic<HWINEVENTHOOK> g_host_hook{nullptr};
 
 struct RunParam {
     ThreadProc proc;
     void* param;
+    HWND target;
 };
 
 UINT RunMessage() {
@@ -105,7 +107,7 @@ bool RunOnWindowThread(HWND hWnd, ThreadProc proc, void* param) {
         return true;
     }
 
-    RunParam rp{proc, param};
+    RunParam rp{proc, param, hWnd};
 
     HHOOK hook = SetWindowsHookExW(
         WH_CALLWNDPROC,
@@ -114,7 +116,18 @@ bool RunOnWindowThread(HWND hWnd, ThreadProc proc, void* param) {
                 const auto* cwp = reinterpret_cast<const CWPSTRUCT*>(lParam);
                 if (cwp->message == RunMessage()) {
                     auto* p = reinterpret_cast<RunParam*>(cwp->lParam);
-                    p->proc(p->param);
+                    // Registered window messages are process-global: this
+                    // hook is scoped to a thread, not a window, so any other
+                    // window on the same thread - or, in principle, an
+                    // unrelated HWND_BROADCAST reusing this message id -
+                    // would otherwise be treated as if it carried our own
+                    // RunParam. Upstream has the same hole; this closes it
+                    // for our own concurrent RunOnWindowThread calls that
+                    // happen to share a thread_id, which is the realistic
+                    // case.
+                    if (cwp->hwnd == p->target) {
+                        p->proc(p->param);
+                    }
                 }
             }
             return CallNextHookEx(nullptr, code, wParam, lParam);
@@ -153,23 +166,28 @@ bool IsInitializedForCurrentThread() {
 }
 
 void StartHostWatch() {
-    if (g_host_hook) {
-        return;
-    }
-    g_host_hook =
+    HWINEVENTHOOK hook =
         SetWinEventHook(EVENT_OBJECT_CREATE, EVENT_OBJECT_CREATE, nullptr,
                         HostCreatedProc, GetCurrentProcessId(), 0,
                         WINEVENT_OUTOFCONTEXT);
     STYLER_LOG(LogLevel::Info, L"host watch %s",
-               g_host_hook ? L"started" : L"FAILED to start");
+               hook ? L"started" : L"FAILED to start");
+
+    // exchange (not check-then-act) so two concurrent SetSite calls cannot
+    // both read "no hook yet" and both install one, leaking whichever hook
+    // gets overwritten without ever being unhooked - same reasoning as
+    // OpenDiagnostics's g_session.exchange (visual_tree_watcher.cpp).
+    HWINEVENTHOOK previous = g_host_hook.exchange(hook);
+    if (previous) {
+        UnhookWinEvent(previous);
+    }
 }
 
 void StopHostWatch() {
-    if (!g_host_hook) {
-        return;
+    HWINEVENTHOOK hook = g_host_hook.exchange(nullptr);
+    if (hook) {
+        UnhookWinEvent(hook);
     }
-    UnhookWinEvent(g_host_hook);
-    g_host_hook = nullptr;
 }
 
 }  // namespace styler::tap
