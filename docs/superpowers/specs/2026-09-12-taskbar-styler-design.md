@@ -98,10 +98,18 @@ Tray inicia
       └─ P/Invoke InitializeXamlDiagnosticsEx(conn, pid, "", tap.dll, CLSID, installDir)
           └─ [dentro do explorer] Windows carrega tap.dll
               └─ DllGetClassObject → SetSite(IXamlDiagnostics)
-                  └─ QI IVisualTreeService3 → AdviseVisualTreeChange(this)
-                      └─ OnVisualTreeChange(Add, elemento)  ← por elemento
-                          └─ casa seletor → aplica estilo
+                  └─ QI IVisualTreeService3
+                      ├─ [Plano 2] GetVisualRoots/GetChildren  ← travessia sob demanda
+                      │      └─ formata a árvore → exporta
+                      └─ [Plano 3] AdviseVisualTreeChange(this)
+                             └─ OnVisualTreeChange(Add, elemento)  ← por elemento
+                                 └─ casa seletor → aplica estilo
 ```
+
+A assinatura de notificação só entra no Plano 3: liberar handle de dentro do
+callback exige o dreno adiado descrito no §7.2, e o Plano 2 não tem o que fazer
+com o fluxo por elemento — ele percorre a árvore sob demanda e libera cada
+handle dentro da própria travessia.
 
 O laço de conexões (`VisualDiagConnection1`, `2`, …) é mantido: se o Visual Studio ou outra
 ferramenta já tiver uma conexão aberta, é preciso procurar um slot livre.
