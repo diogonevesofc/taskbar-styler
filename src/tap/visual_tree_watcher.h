@@ -23,7 +23,7 @@ namespace styler::tap {
 // (vendor/upstream/windows-11-taskbar-styler.wh.cpp:11168, :18379, :18404).
 // Plano 2 has no such drain and nothing here consumes a per-element change
 // stream anyway (Task 5 walks the tree on demand through
-// IVisualTreeService3::GetVisualRoots/GetChildren) - the subscription, and
+// a one-shot snapshot instead) - the standing subscription, and
 // the deferred-release drain it requires, is deferred to Plano 3, which is
 // the first plan that actually needs live change notifications.
 
@@ -91,7 +91,7 @@ void CloseDiagnostics();
 std::shared_ptr<DiagnosticsSession> AcquireSession();
 
 // Releases one handle the diagnostics layer reported - e.g. a handle Task 5's
-// tree walk got back from IVisualTreeService3::GetChildren. Every handle the
+// snapshot got back from the initial mutation flood. Every handle the
 // diagnostics layer hands out stays registered on its side and explorer.exe
 // leaks for as long as it runs until this is called (spec section 7.2). Safe
 // to call with handle == 0 (a root element's parent handle): that is not a

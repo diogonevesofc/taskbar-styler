@@ -99,9 +99,9 @@ Tray inicia
           └─ [dentro do explorer] Windows carrega tap.dll
               └─ DllGetClassObject → SetSite(IXamlDiagnostics)
                   └─ QI IVisualTreeService3
-                      ├─ [Plano 2] GetVisualRoots/GetChildren  ← travessia sob demanda
-                      │      └─ formata a árvore → exporta
-                      └─ [Plano 3] AdviseVisualTreeChange(this)
+                      ├─ [Plano 2] Advise → lote inicial síncrono → Unadvise
+                      │      └─ formata a árvore → exporta → libera handles
+                      └─ [Plano 3] assinatura que fica de pé
                              └─ OnVisualTreeChange(Add, elemento)  ← por elemento
                                  └─ casa seletor → aplica estilo
 ```
@@ -321,12 +321,14 @@ futura do Windows, os elementos vazam.
 ainda está visitando a subárvore sendo removida, então liberar ali destrói o objeto no meio da
 travessia. O upstream chama isso de "the one thing that isn't safe" e resolve enfileirando a
 liberação e drenando a fila na thread do dispatcher do host
-(`vendor/upstream/windows-11-taskbar-styler.wh.cpp:11168`, `:18379`, `:18404`). O Plano 2 não
-assina notificação de mudança nenhuma — sua Task 5 só percorre a árvore sob demanda via
-`IVisualTreeService3::GetVisualRoots`/`GetChildren`, e libera cada handle obtido assim
-diretamente, fora de qualquer callback, o que é seguro. A assinatura em si, e o dreno de
-liberação adiada que ela exige para ser segura, ficam para o Plano 3, que é o primeiro a
-precisar de notificação de mudança ao vivo para aplicar estilo incrementalmente.
+(`vendor/upstream/windows-11-taskbar-styler.wh.cpp:11168`, `:18379`, `:18404`). O Plano 2 assina, mas só por um instante: sua
+Task 5 chama `AdviseVisualTreeChange`, recebe o lote inicial — que chega síncrono dentro da
+própria chamada, medido em spike —, chama `UnadviseVisualTreeChange`, e só então formata e
+libera cada handle, fora de qualquer callback. O callback do instantâneo copia valores e nada
+mais: nunca libera handle. É por isso que o Plano 2 não precisa do dreno adiado. A assinatura
+que **fica de pé** ao longo do tempo, e o dreno que ela exige para ser segura, ficam para o
+Plano 3, que é o primeiro a precisar de notificação de mudança ao vivo para aplicar estilo
+incrementalmente.
 
 ### 7.3 Log
 

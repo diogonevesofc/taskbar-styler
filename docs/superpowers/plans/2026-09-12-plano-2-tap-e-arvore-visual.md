@@ -1069,11 +1069,13 @@ walk do explorer ainda está visitando a subárvore sendo removida — o upstrea
 chama isso de "the one thing that isn't safe" e resolve enfileirando a
 liberação e drenando na thread do dispatcher
 (`vendor/upstream/windows-11-taskbar-styler.wh.cpp:11168`, `:18379`, `:18404`).
-Nada no Plano 2 consome esse fluxo por elemento de qualquer forma — a Task 5
-percorre a árvore sob demanda via `IVisualTreeService3::GetVisualRoots`/
-`GetChildren`. A assinatura de notificações, e o dreno de liberação adiada que
-ela exige, ficam para o Plano 3, que é o primeiro a precisar de notificação de
-mudança ao vivo para aplicar estilo incrementalmente conforme elementos
+A Task 5 obtém a árvore de outro jeito (Ruling 12): assina, recebe o lote
+inicial — que chega síncrono dentro da própria chamada de
+`AdviseVisualTreeChange` —, desassina, e só então formata e libera, fora de
+qualquer callback. É um instantâneo, não uma assinatura permanente. A
+assinatura que **fica de pé** ao longo do tempo, e o dreno de liberação adiada
+que ela exige, ficam para o Plano 3, que é o primeiro a precisar de notificação
+de mudança ao vivo para aplicar estilo incrementalmente conforme elementos
 aparecem.
 
 **Fix round 2** encontrou um Critical que sobreviveu ao round 1: a sessão vivia
@@ -1114,8 +1116,8 @@ referência forte em si.
     `CloseDiagnostics` concorrente em outra thread. Vazio se nenhuma sessão
     estiver aberta.
   - `void styler::tap::ReleaseHandle(InstanceHandle handle)` — usado pela
-    Task 5 para liberar cada handle que sua travessia obtiver de
-    `GetChildren`; no-op para `handle == 0` (o handle de pai de uma raiz).
+    Task 5 para liberar cada handle que o lote inicial reportar; no-op para
+    `handle == 0` (o handle de pai de uma raiz).
   - `long styler::tap::ReleasedHandleCount()` — conta quantos handles já foram
     liberados com sucesso neste processo; monotônico (só cresce). **Não é** o
     contador de handles vivos do spec §7.2: esse contador não é implementado
@@ -1163,10 +1165,11 @@ namespace styler::tap {
 // draining the queue on the host's dispatcher thread
 // (vendor/upstream/windows-11-taskbar-styler.wh.cpp:11168, :18379, :18404).
 // Plano 2 has no such drain and nothing here consumes a per-element change
-// stream anyway (Task 5 walks the tree on demand through
-// IVisualTreeService3::GetVisualRoots/GetChildren) - the subscription, and
-// the deferred-release drain it requires, is deferred to Plano 3, which is
-// the first plan that actually needs live change notifications.
+// stream anyway (Task 5 takes a one-shot snapshot instead: advise, let the
+// initial flood arrive synchronously inside that call, unadvise, and only
+// then release) - the standing subscription, and the deferred-release drain
+// it requires, are deferred to Plano 3, which is the first plan that
+// actually needs live change notifications.
 
 // Private and undocumented; obtained by QI with a hardcoded GUID inside
 // OpenDiagnostics. Only forward-declared here so DiagnosticsSession can hold
@@ -1227,7 +1230,7 @@ void CloseDiagnostics();
 std::shared_ptr<DiagnosticsSession> AcquireSession();
 
 // Releases one handle the diagnostics layer reported - e.g. a handle Task 5's
-// tree walk got back from IVisualTreeService3::GetChildren. Every handle the
+// snapshot got back from the initial mutation flood. Every handle the
 // diagnostics layer hands out stays registered on its side and explorer.exe
 // leaks for as long as it runs until this is called (spec section 7.2). Safe
 // to call with handle == 0 (a root element's parent handle): that is not a
@@ -1483,8 +1486,8 @@ A entrega do plano.
   Segure esse `shared_ptr` (não extraia e guarde o `IXamlDiagnostics*` cru de
   dentro dele) pelo tempo que a travessia levar: ele é o que mantém a sessão
   viva mesmo com um `CloseDiagnostics`/`SetSite(nullptr)` concorrente em outra
-  thread. Cada handle que a travessia obtém de `GetVisualRoots`/
-  `GetChildren` precisa ser passado a `ReleaseHandle` depois de usado (Task 4),
+  thread. Cada handle que o lote inicial reporta precisa ser passado a
+  `ReleaseHandle` depois de usado (Task 4),
   senão vaza pela vida do processo explorer (spec §7.2) — a travessia sob
   demanda não ganha essa liberação de graça só por o Plano 2 ter aberto a
   sessão de diagnóstico.
@@ -1679,9 +1682,22 @@ ctest --test-dir build --output-on-failure
 
 Esperado: os quatro `TEST_CASE` novos passando.
 
-- [ ] **Step 6: Escrever a travessia, `tree_export.cpp`**
+- [ ] **Step 6: Escrever a captura, `tree_export.cpp`**
 
-Só na DLL:
+**Leia antes** `.superpowers/sdd/2026-09-12-plano-2-tap-e-arvore-visual/spike-pull-walk.md`.
+Este step foi reescrito depois de um spike, porque a versao anterior chamava
+`IVisualTreeService3::GetVisualRoots`/`GetChildren`, que **nao existem**
+(Ruling 12).
+
+A captura e um instantaneo, nao uma assinatura permanente: assina, recebe o
+lote inicial, desassina, e so entao formata e libera. O spike mediu que o lote
+inicial chega **de forma sincrona dentro da propria chamada de
+`AdviseVisualTreeChange`**, na thread que chamou -- 200 elementos ja estavam
+registrados quando a chamada retornou. Entao nao ha thread de callback nova, e
+nao ha dreno adiado: a liberacao acontece depois do `Unadvise`, fora de
+qualquer callback.
+
+So na DLL:
 
 ```cpp
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -1690,7 +1706,10 @@ Só na DLL:
 #include <inspectable.h>
 #include <xamlom.h>
 
+#include <algorithm>
 #include <cstdio>
+#include <map>
+#include <vector>
 
 #include <tap/log.h>
 #include <tap/visual_tree_watcher.h>
@@ -1698,97 +1717,196 @@ Só na DLL:
 namespace styler::tap {
 namespace {
 
-constexpr int kMaxDepth = 64;
+// Bounds the recursion in Materialise. A cycle in the reported relations
+// would otherwise recurse until the stack dies, inside explorer. A real XAML
+// tree is nowhere near this deep.
+constexpr int kMaxDepth = 128;
 
-void BuildNode(IVisualTreeService3* service, InstanceHandle handle,
-               TreeNode& out, int depth) {
-    if (depth > kMaxDepth) {
-        STYLER_LOG(LogLevel::Error, L"tree deeper than %d, stopping",
-                   kMaxDepth);
-        return;
-    }
+// One element as the mutation stream reported it. The BSTRs are copied out
+// immediately - they belong to the caller, not to us.
+struct Reported {
+    InstanceHandle handle = 0;
+    InstanceHandle parent = 0;
+    unsigned int child_index = 0;
+    std::wstring type;
+    std::wstring name;
+};
 
-    unsigned int count = 0;
-    InstanceHandle* children = nullptr;
-    if (FAILED(service->GetChildren(handle, &count, &children))) {
-        return;
-    }
+// Records the initial flood and nothing else.
+//
+// The body of OnVisualTreeChange must stay this small. It runs from inside
+// XAML's own walk, so anything beyond copying values out happens while XAML
+// is mid-traversal. In particular it never releases a handle: releasing from
+// inside the callback destroys the element mid-walk - upstream calls that
+// "the one thing that isn't safe"
+// (vendor/upstream/windows-11-taskbar-styler.wh.cpp:11168, :18379, :18404).
+// Every handle collected here is released by ExportTreeToFile, after
+// UnadviseVisualTreeChange has returned.
+class SnapshotCallback : public IVisualTreeServiceCallback2 {
+   public:
+    std::vector<Reported> reported;
 
-    for (unsigned int i = 0; i < count; i++) {
-        VisualElement element{};
-        if (FAILED(service->GetVisualElement(children[i], &element))) {
-            continue;
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override {
+        if (!ppv) {
+            return E_POINTER;
         }
-
-        TreeNode child;
-        child.type = element.Type ? element.Type : L"<unknown>";
-        child.name = element.Name ? element.Name : L"";
-
-        BuildNode(service, children[i], child, depth + 1);
-        out.children.push_back(std::move(child));
-
-        // The diagnostics layer keeps this handle registered until we say
-        // otherwise; every one GetChildren hands out must be released or it
-        // leaks for the life of explorer.exe (spec section 7.2).
-        ReleaseHandle(children[i]);
+        if (riid == IID_IUnknown ||
+            riid == __uuidof(IVisualTreeServiceCallback) ||
+            riid == __uuidof(IVisualTreeServiceCallback2)) {
+            *ppv = static_cast<IVisualTreeServiceCallback2*>(this);
+            return S_OK;
+        }
+        *ppv = nullptr;
+        return E_NOINTERFACE;
     }
 
-    if (children) {
-        CoTaskMemFree(children);
+    // Lives on the stack for exactly one Advise/Unadvise pair, so the
+    // reference count is not what keeps it alive. Never free on zero.
+    ULONG STDMETHODCALLTYPE AddRef() override { return 2; }
+    ULONG STDMETHODCALLTYPE Release() override { return 1; }
+
+    HRESULT STDMETHODCALLTYPE OnVisualTreeChange(
+        ParentChildRelation relation, VisualElement element,
+        VisualMutationType mutationType) override {
+        try {
+            if (mutationType == Add) {
+                Reported r;
+                r.handle = element.Handle;
+                r.parent = relation.Parent;
+                r.child_index = relation.ChildIndex;
+                r.type = element.Type ? element.Type : L"";
+                r.name = element.Name ? element.Name : L"";
+                reported.push_back(std::move(r));
+            }
+        } catch (...) {
+            // Losing one element is a smaller failure than letting a throw
+            // cross back into XAML mid-walk.
+        }
+        return S_OK;  // Never an error: XAML stops reporting after one.
     }
+
+    HRESULT STDMETHODCALLTYPE OnElementStateChanged(
+        InstanceHandle, VisualElementState, LPCWSTR) noexcept override {
+        return S_OK;
+    }
+};
+
+TreeNode Materialise(size_t i, const std::vector<Reported>& reported,
+                     const std::vector<std::vector<size_t>>& kids, int depth) {
+    TreeNode node;
+    node.type = reported[i].type;
+    node.name = reported[i].name;
+    if (depth >= kMaxDepth) {
+        STYLER_LOG(LogLevel::Warn, L"tree depth cap %d hit at %s", kMaxDepth,
+                   node.type.c_str());
+        return node;
+    }
+    for (size_t k : kids[i]) {
+        node.children.push_back(Materialise(k, reported, kids, depth + 1));
+    }
+    return node;
+}
+
+// Builds the forest from the reported parent/child pairs. An element whose
+// parent handle was never itself reported is a root - the stream reports the
+// taskbar's hosts without reporting whatever contains them.
+std::vector<TreeNode> BuildForest(const std::vector<Reported>& reported) {
+    std::map<InstanceHandle, size_t> index_of;
+    for (size_t i = 0; i < reported.size(); ++i) {
+        // First report of a handle wins: a handle reported twice would
+        // otherwise leave the first copy's children pointing at a stale node.
+        index_of.emplace(reported[i].handle, i);
+    }
+
+    std::vector<std::vector<size_t>> kids(reported.size());
+    std::vector<size_t> roots;
+    for (size_t i = 0; i < reported.size(); ++i) {
+        if (index_of[reported[i].handle] != i) {
+            continue;  // Duplicate report of an earlier handle.
+        }
+        auto parent = index_of.find(reported[i].parent);
+        if (reported[i].parent == 0 || parent == index_of.end()) {
+            roots.push_back(i);
+        } else {
+            kids[parent->second].push_back(i);
+        }
+    }
+
+    for (std::vector<size_t>& k : kids) {
+        std::stable_sort(k.begin(), k.end(), [&](size_t a, size_t b) {
+            return reported[a].child_index < reported[b].child_index;
+        });
+    }
+
+    std::vector<TreeNode> forest;
+    for (size_t r : roots) {
+        forest.push_back(Materialise(r, reported, kids, 0));
+    }
+    return forest;
 }
 
 }  // namespace
 
 HRESULT ExportTreeToFile(const std::wstring& path) {
-    // Holding `session` for the whole walk is what keeps IXamlDiagnostics -
-    // and everything under it - alive even if CloseDiagnostics runs
-    // concurrently on another thread (Task 4, fix round 2).
+    // One named local, held across the whole export. AcquireSession()->...
+    // written as a single expression would drop the owning temporary at the
+    // end of that expression - see visual_tree_watcher.h.
     std::shared_ptr<DiagnosticsSession> session = AcquireSession();
     if (!session) {
+        STYLER_LOG(LogLevel::Error,
+                   L"ExportTreeToFile called with no diagnostics session");
         return E_NOT_VALID_STATE;
     }
 
     IVisualTreeService3* service = nullptr;
-    HRESULT hr = session->diagnostics()->QueryInterface(IID_PPV_ARGS(&service));
-    if (FAILED(hr)) {
-        return hr;
+    HRESULT hr = session->diagnostics()->QueryInterface(
+        __uuidof(IVisualTreeService3), reinterpret_cast<void**>(&service));
+    if (FAILED(hr) || !service) {
+        STYLER_LOG(LogLevel::Error, L"QI IVisualTreeService3 failed 0x%08X", hr);
+        return FAILED(hr) ? hr : E_NOINTERFACE;
     }
 
-    unsigned int root_count = 0;
-    InstanceHandle* roots = nullptr;
-    hr = service->GetVisualRoots(&root_count, &roots);
-    if (FAILED(hr)) {
-        service->Release();
-        return hr;
-    }
-
-    std::wstring out;
-    for (unsigned int i = 0; i < root_count; i++) {
-        VisualElement element{};
-        if (FAILED(service->GetVisualElement(roots[i], &element))) {
-            continue;
-        }
-        TreeNode root;
-        root.type = element.Type ? element.Type : L"<root>";
-        root.name = element.Name ? element.Name : L"";
-
-        BuildNode(service, roots[i], root, 0);
-        AssignSiblingIndices(root);
-
-        out += FormatTree(root);
-        out += L'\n';
-
-        ReleaseHandle(roots[i]);  // Same rule as every child handle above.
-    }
-
-    if (roots) {
-        CoTaskMemFree(roots);
+    SnapshotCallback callback;
+    hr = service->AdviseVisualTreeChange(&callback);
+    if (SUCCEEDED(hr)) {
+        // Whatever arrived, arrived inside the call above. Unadvise before
+        // formatting so nothing is reported into `callback` while we read it.
+        service->UnadviseVisualTreeChange(&callback);
     }
     service->Release();
 
+    if (FAILED(hr)) {
+        STYLER_LOG(LogLevel::Error, L"AdviseVisualTreeChange failed 0x%08X", hr);
+        return hr;
+    }
+
+    if (callback.reported.empty()) {
+        // Do not write an empty file and call it success. The initial flood
+        // arriving inside the Advise call is measured behaviour, not a
+        // documented guarantee; this is the line that says so if it changes.
+        STYLER_LOG(LogLevel::Error,
+                   L"AdviseVisualTreeChange reported no elements");
+        return E_FAIL;
+    }
+    STYLER_LOG(LogLevel::Info, L"snapshot: %zu elements",
+               callback.reported.size());
+
+    std::wstring out;
+    for (TreeNode& root : BuildForest(callback.reported)) {
+        AssignSiblingIndices(root);
+        out += FormatTree(root);
+        out += L'\n';
+    }
+
+    // Every handle the stream reported is ours to release, and here is the
+    // safe place: no callback is running and we are not inside XAML's walk.
+    for (const Reported& r : callback.reported) {
+        ReleaseHandle(r.handle);
+    }
+
     FILE* f = nullptr;
     if (_wfopen_s(&f, path.c_str(), L"w, ccs=UTF-8") != 0 || !f) {
+        STYLER_LOG(LogLevel::Error, L"cannot write %s", path.c_str());
         return HRESULT_FROM_WIN32(ERROR_CANNOT_MAKE);
     }
     fputws(out.c_str(), f);
@@ -1800,6 +1918,16 @@ HRESULT ExportTreeToFile(const std::wstring& path) {
 
 }  // namespace styler::tap
 ```
+
+Notas que o spike deixou e que valem para quem escrever isto:
+
+- `GetPropertyValuesChain` + `GetCollectionElements` **funcionam** para enumerar
+  filhos, mas param em controles com template: `Taskbar.TaskbarFrame` tem 265
+  propriedades e nenhuma delas e `Children`/`Content`/`Child`. Por isso a arvore
+  sai do stream, nao de uma travessia por propriedades.
+- Se algum dia precisar de `GetCollectionElements`: o `pElementCount` e
+  **in/out** apesar de o header declarar `[out]`. Passar 0 devolve `S_OK` com
+  zero elementos.
 
 - [ ] **Step 7: Disparar na carga**
 
