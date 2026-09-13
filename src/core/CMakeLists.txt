@@ -4,6 +4,9 @@ add_library(styler_core STATIC
   style_rule.cpp
   utf.cpp
   theme_loader.cpp
+  constants.cpp
+  type_name.cpp
+  blur_rewrite.cpp
 )
 
 target_include_directories(styler_core PUBLIC include)

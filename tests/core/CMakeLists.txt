@@ -5,11 +5,16 @@ add_executable(styler_core_tests
   test_theme_loader.cpp
   test_utf.cpp
   test_corpus.cpp
+  test_constants.cpp
+  test_type_name.cpp
+  test_blur_rewrite.cpp
+  test_corpus_resolution.cpp
 )
 
 target_link_libraries(styler_core_tests PRIVATE
   styler_core
   doctest::doctest
+  nlohmann_json::nlohmann_json
 )
 
 if(MSVC)
