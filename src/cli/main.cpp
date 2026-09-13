@@ -3,6 +3,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <string>
 
 #include <cli/loader.h>
 
@@ -57,6 +58,38 @@ int CmdLoad() {
     return 0;
 }
 
+int CmdStatus() {
+    DWORD pid = styler::cli::FindTaskbarPid();
+    if (pid == 0) {
+        wprintf(L"explorer.exe: nao encontrado\n");
+        return 1;
+    }
+    wprintf(L"explorer.exe pid=%lu\n", pid);
+
+    // The TAP writes its log from inside explorer; that file is the only status
+    // channel this plan has. The tray of Plano 4 replaces it with a real one.
+    wchar_t base[MAX_PATH]{};
+    DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH);
+    if (n > 0 && n < MAX_PATH) {
+        std::wstring log = std::wstring(base) + L"\\TaskbarStyler\\log.txt";
+        if (GetFileAttributesW(log.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            wprintf(L"log: %s\n", log.c_str());
+        } else {
+            wprintf(L"log: ainda nao existe (o TAP nunca carregou)\n");
+        }
+    }
+    return 0;
+}
+
+int CmdUnload() {
+    wprintf(L"O TAP nao se descarrega. Arrancar uma DLL COM de um processo\n"
+            L"vivo, com callbacks do XAML possivelmente em voo, e fragil.\n"
+            L"Ele fica residente e inerte ate o proximo reinicio do explorer.\n\n"
+            L"Para limpar agora, reinicie o Explorador do Windows pelo\n"
+            L"Gerenciador de Tarefas.\n");
+    return 0;
+}
+
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
@@ -65,6 +98,12 @@ int wmain(int argc, wchar_t** argv) {
     }
     if (wcscmp(argv[1], L"load") == 0) {
         return CmdLoad();
+    }
+    if (wcscmp(argv[1], L"status") == 0) {
+        return CmdStatus();
+    }
+    if (wcscmp(argv[1], L"unload") == 0) {
+        return CmdUnload();
     }
     wprintf(L"comando desconhecido: %s\n\n", argv[1]);
     return Usage();

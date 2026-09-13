@@ -29,6 +29,7 @@
 #include <tap/clsid.h>
 #include <tap/log.h>
 #include <tap/site.h>
+#include <tap/thread_init.h>
 #include <tap/tree_export.h>
 #include <tap/visual_tree_watcher.h>
 
@@ -42,6 +43,10 @@ namespace {
 // is called from several explorer UI threads, hence std::atomic rather than
 // a plain pointer.
 std::atomic<IUnknown*> g_site{nullptr};
+
+void WINAPI InitThunkPublic(void*) {
+    InitializeForCurrentThread();
+}
 
 class TaskbarStylerTap : public IObjectWithSite {
 public:
@@ -83,6 +88,7 @@ public:
                 previous->Release();
             }
             if (!site) {
+                StopHostWatch();
                 CloseDiagnostics();
                 return S_OK;
             }
@@ -99,6 +105,14 @@ public:
                 STYLER_LOG(LogLevel::Error, L"OpenDiagnostics failed 0x%08X",
                            static_cast<unsigned>(hr));
             } else {
+                if (HWND ui = GetTaskbarUiWnd()) {
+                    RunOnWindowThread(ui, InitThunkPublic, nullptr);
+                }
+                for (HWND xaml_host : GetXamlHostWnds()) {
+                    RunOnWindowThread(xaml_host, InitThunkPublic, nullptr);
+                }
+                StartHostWatch();
+
                 wchar_t local[MAX_PATH]{};
                 DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH);
                 if (n > 0 && n < MAX_PATH) {
