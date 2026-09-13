@@ -19,6 +19,13 @@ set_target_properties(taskbar_styler_tap PROPERTIES
   OUTPUT_NAME "TaskbarStyler.Tap"
   PREFIX ""
   SUFFIX ".dll"
+  # TapDllPath() (src/cli/loader.cpp) looks for the DLL next to the CLI exe.
+  # CMake's default per-target output dirs would put this MODULE in
+  # build/src/tap and the CLI exe in build/src/cli, so pin this one target's
+  # output next to the CLI instead of moving the CLI (whose path is baked
+  # into docs and the task-3 smoke test as build/src/cli/taskbar-styler.exe).
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/src/cli"
+  LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/src/cli"
 )
 
 # The .def controls exports explicitly: only DllGetClassObject and

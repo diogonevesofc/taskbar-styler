@@ -6,6 +6,8 @@
 #include <atomic>
 #include <cstdarg>
 #include <cstdio>
+#include <cwchar>
+#include <iterator>
 #include <mutex>
 #include <string>
 
@@ -17,7 +19,7 @@ std::mutex g_file_mutex;
 
 constexpr long long kMaxLogBytes = 1024 * 1024;
 
-std::wstring LogPath() {
+std::wstring ConfigDir() {
     wchar_t base[MAX_PATH]{};
     DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH);
     if (n == 0 || n >= MAX_PATH) {
@@ -25,7 +27,58 @@ std::wstring LogPath() {
     }
     std::wstring dir = std::wstring(base) + L"\\TaskbarStyler";
     CreateDirectoryW(dir.c_str(), nullptr);
+    return dir;
+}
+
+std::wstring LogPath() {
+    std::wstring dir = ConfigDir();
+    if (dir.empty()) {
+        return {};
+    }
     return dir + L"\\log.txt";
+}
+
+// Nothing in this codebase ever calls SetLogLevel() outside of tests, so
+// without this, Error is the only level anyone could ever observe once the
+// TAP is loaded into explorer.exe - there is no IPC channel to reach a live
+// TAP and raise it. This file is the knob instead of an environment
+// variable: explorer.exe's environment is fixed at logon, long before this
+// DLL is ever loaded into it, so an env var set afterwards would never be
+// seen - a config file the CLI can write right before `load` will be, because
+// this is the first time the DLL is loaded into that explorer process.
+// Read once per process (see the call site in GetLogLevel()): a later edit to
+// the file has no effect on a TAP already resident in a running explorer.
+LogLevel LevelFromConfigFile() {
+    std::wstring dir = ConfigDir();
+    if (dir.empty()) {
+        return LogLevel::Error;
+    }
+    std::wstring path = dir + L"\\loglevel.txt";
+
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, path.c_str(), L"r, ccs=UTF-8") != 0 || !f) {
+        return LogLevel::Error;
+    }
+    wchar_t buf[16]{};
+    wchar_t* got = fgetws(buf, static_cast<int>(std::size(buf)), f);
+    fclose(f);
+    if (!got) {
+        return LogLevel::Error;
+    }
+
+    size_t len = wcslen(buf);
+    while (len > 0 && (buf[len - 1] == L'\n' || buf[len - 1] == L'\r' ||
+                       buf[len - 1] == L' ')) {
+        buf[--len] = L'\0';
+    }
+
+    if (_wcsicmp(buf, L"debug") == 0) {
+        return LogLevel::Debug;
+    }
+    if (_wcsicmp(buf, L"info") == 0) {
+        return LogLevel::Info;
+    }
+    return LogLevel::Error;
 }
 
 const wchar_t* LevelTag(LogLevel level) {
@@ -65,6 +118,17 @@ void SetLogLevel(LogLevel level) {
 }
 
 LogLevel GetLogLevel() {
+    // Applies the config-file level exactly once per process, the first time
+    // anyone asks. A function-local static (not a global one) so the file
+    // read happens on first use - same lazy pattern LogPath() already uses -
+    // rather than during DllMain's static initialization, which callers
+    // reach through a loader lock.
+    static const LogLevel applied = [] {
+        LogLevel level = LevelFromConfigFile();
+        g_level.store(level, std::memory_order_relaxed);
+        return level;
+    }();
+    (void)applied;
     return g_level.load(std::memory_order_relaxed);
 }
 

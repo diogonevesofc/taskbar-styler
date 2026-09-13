@@ -1,12 +1,22 @@
 add_executable(taskbar_styler_tap_tests
   test_log.cpp
+  test_loader.cpp
+  ${CMAKE_SOURCE_DIR}/src/cli/loader.cpp
+)
+target_include_directories(taskbar_styler_tap_tests PRIVATE
+  ${CMAKE_SOURCE_DIR}/src
 )
 target_link_libraries(taskbar_styler_tap_tests PRIVATE
   taskbar_styler_tap_lib
   doctest::doctest
 )
-target_compile_definitions(taskbar_styler_tap_tests PRIVATE
-  DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+# Scoped to test_log.cpp alone: this macro makes doctest.h emit its
+# implementation (incl. main()). Defining it target-wide would emit that
+# implementation again in every other TU that includes doctest.h - now that
+# test_loader.cpp is a second such TU, that would fail to link with
+# duplicate-symbol errors (main included).
+set_source_files_properties(test_log.cpp PROPERTIES
+  COMPILE_DEFINITIONS DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 )
 if(MSVC)
   target_compile_options(taskbar_styler_tap_tests PRIVATE /utf-8 /W4 /permissive-)
