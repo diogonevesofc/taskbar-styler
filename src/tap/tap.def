@@ -1,0 +1,4 @@
+LIBRARY TaskbarStyler.Tap
+EXPORTS
+    DllGetClassObject   PRIVATE
+    DllCanUnloadNow     PRIVATE

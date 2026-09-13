@@ -19,6 +19,8 @@ FetchContent_Declare(nlohmann_json
 FetchContent_MakeAvailable(nlohmann_json)
 
 add_subdirectory(src/core)
+add_subdirectory(src/tap)
+add_subdirectory(src/cli)
 
 if(TASKBAR_STYLER_BUILD_TESTS)
   FetchContent_Declare(doctest
@@ -38,4 +40,5 @@ if(TASKBAR_STYLER_BUILD_TESTS)
 
   enable_testing()
   add_subdirectory(tests/core)
+  add_subdirectory(tests/tap)
 endif()
