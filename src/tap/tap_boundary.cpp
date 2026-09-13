@@ -81,7 +81,7 @@ public:
                 previous->Release();
             }
             if (!site) {
-                StopWatching();
+                CloseDiagnostics();
                 return S_OK;
             }
 
@@ -92,9 +92,9 @@ public:
             GetModuleFileNameW(nullptr, host, MAX_PATH);
             STYLER_LOG(LogLevel::Info, L"loaded into %s", host);
 
-            HRESULT hr = StartWatching(site);
+            HRESULT hr = OpenDiagnostics(site);
             if (FAILED(hr)) {
-                STYLER_LOG(LogLevel::Error, L"StartWatching failed 0x%08X",
+                STYLER_LOG(LogLevel::Error, L"OpenDiagnostics failed 0x%08X",
                            static_cast<unsigned>(hr));
             }
         } catch (...) {

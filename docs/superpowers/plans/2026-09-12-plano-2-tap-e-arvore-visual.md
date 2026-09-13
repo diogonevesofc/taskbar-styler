@@ -1052,11 +1052,28 @@ git commit -m "feat(cli): comando load, sem injecao e sem retry em loop"
 
 ---
 
-### Task 4: Receber a árvore visual
+### Task 4: Abrir a sessão de diagnóstico
 
-Com o site na mão, obter `IVisualTreeService3` e registrar o callback. Aqui
-aparece o bookkeeping de handles, que se for esquecido faz o explorer vazar
-memória continuamente (spec §7.2).
+Com o site na mão, obter `IXamlDiagnostics` e, quando disponível,
+`IXamlDiagnosticsTestHooks` — a interface privada usada para liberar handles.
+Aqui aparece o bookkeeping de handles, que se for esquecido faz o explorer
+vazar memória continuamente (spec §7.2).
+
+**Não é feita** aqui nenhuma assinatura de notificação de mudança
+(`IVisualTreeServiceCallback2` / `AdviseVisualTreeChange`). Uma revisão de
+código (fix round 1) encontrou três Criticals na versão original desta tarefa,
+todos decorrentes de assinar notificações sem ter onde drená-las com segurança:
+liberar um handle de dentro de `OnVisualTreeChange` acontece enquanto o Leave
+walk do explorer ainda está visitando a subárvore sendo removida — o upstream
+chama isso de "the one thing that isn't safe" e resolve enfileirando a
+liberação e drenando na thread do dispatcher
+(`vendor/upstream/windows-11-taskbar-styler.wh.cpp:11168`, `:18379`, `:18404`).
+Nada no Plano 2 consome esse fluxo por elemento de qualquer forma — a Task 5
+percorre a árvore sob demanda via `IVisualTreeService3::GetVisualRoots`/
+`GetChildren`. A assinatura de notificações, e o dreno de liberação adiada que
+ela exige, ficam para o Plano 3, que é o primeiro a precisar de notificação de
+mudança ao vivo para aplicar estilo incrementalmente conforme elementos
+aparecem.
 
 **Files:**
 - Create: `src/tap/visual_tree_watcher.h`, `src/tap/visual_tree_watcher.cpp`
@@ -1065,10 +1082,18 @@ memória continuamente (spec §7.2).
 **Interfaces:**
 - Consumes: `g_site`, `STYLER_LOG`.
 - Produces:
-  - `HRESULT styler::tap::StartWatching(IUnknown* site)`
-  - `void styler::tap::StopWatching()`
-  - `long styler::tap::LiveHandleCount()`
-  - `IXamlDiagnostics* styler::tap::Diagnostics()` — usado pela Task 5.
+  - `HRESULT styler::tap::OpenDiagnostics(IUnknown* site)`
+  - `void styler::tap::CloseDiagnostics()`
+  - `void styler::tap::ReleaseHandle(InstanceHandle handle)` — usado pela
+    Task 5 para liberar cada handle que sua travessia obtiver de
+    `GetChildren`; no-op para `handle == 0` (o handle de pai de uma raiz).
+  - `long styler::tap::LiveHandleCount()` — conta quantos handles já foram
+    liberados com sucesso neste processo; monotônico (só cresce), para servir
+    de observável de vazamento (spec §7.2) — um contador que pode cair abaixo
+    de zero nunca conseguiria mostrar um vazamento parado.
+  - `IXamlDiagnostics* styler::tap::Diagnostics()` — usado pela Task 5; válido
+    somente entre um `OpenDiagnostics` bem-sucedido e o `CloseDiagnostics`
+    (ou `SetSite(nullptr)`) seguinte.
 
 - [ ] **Step 1: Conferir o GUID de `IXamlDiagnosticsTestHooks`**
 
@@ -1095,18 +1120,57 @@ elemento reportado vaza pela vida inteira do processo explorer.
 
 namespace styler::tap {
 
-// Every element the diagnostics layer reports is registered on its side and
-// must be released, or explorer.exe leaks for as long as it runs. The release
-// path needs IXamlDiagnosticsTestHooks, a private interface obtained by QI with
-// a hardcoded GUID; if a future Windows drops it we warn loudly rather than
-// leak in silence (spec section 7.2).
-long LiveHandleCount();
+// Holds the diagnostics session against a XAML host: the QI'd IXamlDiagnostics
+// and, when available, the private IXamlDiagnosticsTestHooks used to release
+// handles.
+//
+// This file does NOT subscribe to change notifications
+// (IVisualTreeServiceCallback2 / AdviseVisualTreeChange). Releasing a handle
+// from inside that callback is unsafe: the report arrives from inside
+// explorer's Leave walk, which is still visiting the subtree being removed,
+// so releasing there destroys it mid-walk - upstream calls this out as "the
+// one thing that isn't safe" and solves it by queueing the release and
+// draining the queue on the host's dispatcher thread
+// (vendor/upstream/windows-11-taskbar-styler.wh.cpp:11168, :18379, :18404).
+// Plano 2 has no such drain and nothing here consumes a per-element change
+// stream anyway (Task 5 walks the tree on demand through
+// IVisualTreeService3::GetVisualRoots/GetChildren) - the subscription, and
+// the deferred-release drain it requires, is deferred to Plano 3, which is
+// the first plan that actually needs live change notifications.
 
-HRESULT StartWatching(IUnknown* site);
-void StopWatching();
+// Opens the diagnostics session against `site`'s IXamlDiagnostics. If a
+// session is already open, it is closed first. Returns a real HRESULT; on
+// any failure no session is left open (Diagnostics() returns nullptr).
+HRESULT OpenDiagnostics(IUnknown* site);
 
-// The site's IXamlDiagnostics, or nullptr before StartWatching succeeded.
+// Closes the session opened by OpenDiagnostics, if any. Safe to call when no
+// session is open.
+void CloseDiagnostics();
+
+// The open session's IXamlDiagnostics, or nullptr if no session is open (no
+// OpenDiagnostics call yet, it failed, or CloseDiagnostics ran since). This
+// is a live, non-owning pointer: the caller does not Release it, and must not
+// cache it past a call that could race a concurrent CloseDiagnostics - AddRef
+// a private copy to hold it longer than one call (same rule as SiteOrNull(),
+// see site.h).
 IXamlDiagnostics* Diagnostics();
+
+// Releases one handle the diagnostics layer reported - e.g. a handle Task 5's
+// tree walk got back from IVisualTreeService3::GetChildren. Every handle the
+// diagnostics layer hands out stays registered on its side and explorer.exe
+// leaks for as long as it runs until this is called (spec section 7.2). Safe
+// to call with handle == 0 (a root element's parent handle): that is not a
+// real handle, and the underlying vtable is private and undocumented, not
+// something to probe with a null handle. Also a safe no-op while no session
+// is open, or IXamlDiagnosticsTestHooks is unavailable (warned once, in
+// OpenDiagnostics).
+void ReleaseHandle(InstanceHandle handle);
+
+// Count of handles successfully released so far this process, via
+// ReleaseHandle. Monotonic - it only increases - so it can serve as the leak
+// observable spec section 7.2 asks for: a counter that could drift negative
+// could never surface a stalled release path the way this one can.
+long LiveHandleCount();
 
 }  // namespace styler::tap
 ```
@@ -1129,7 +1193,7 @@ namespace {
 
 // {735941A2-3EE3-495A-8DA9-972627003075}
 // Private and undocumented; read from the vendored upstream at line 10946.
-// Confirm it still matches before trusting this constant.
+// Confirmed to still match before trusting this constant (2026-09-12).
 constexpr GUID IID_IXamlDiagnosticsTestHooks = {
     0x735941a2,
     0x3ee3,
@@ -1141,175 +1205,133 @@ struct IXamlDiagnosticsTestHooks : IUnknown {
         InstanceHandle handle) = 0;
 };
 
-std::atomic<long> g_live_handles{0};
-IXamlDiagnostics* g_diagnostics = nullptr;
-IXamlDiagnosticsTestHooks* g_hooks = nullptr;
-
-void ReleaseHandle(InstanceHandle handle) {
-    if (!g_hooks) {
-        return;  // Already warned once, in StartWatching.
-    }
-    if (SUCCEEDED(g_hooks->UnregisterInstance(handle))) {
-        g_live_handles.fetch_sub(1, std::memory_order_relaxed);
-    }
-}
-
-class VisualTreeWatcher : public IVisualTreeServiceCallback2 {
+// Owns one open session's IXamlDiagnostics and (when available)
+// IXamlDiagnosticsTestHooks. Both are released exactly once, from the
+// destructor, so teardown has a single gate instead of Release() calls
+// scattered across failure paths that one of them could skip.
+class DiagnosticsSession {
 public:
-    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override {
-        if (!ppv) {
-            return E_POINTER;
+    DiagnosticsSession(IXamlDiagnostics* diagnostics,
+                        IXamlDiagnosticsTestHooks* hooks)
+        : diagnostics_(diagnostics), hooks_(hooks) {}
+
+    DiagnosticsSession(const DiagnosticsSession&) = delete;
+    DiagnosticsSession& operator=(const DiagnosticsSession&) = delete;
+
+    ~DiagnosticsSession() {
+        if (hooks_) {
+            hooks_->Release();
         }
-        if (riid == IID_IUnknown ||
-            riid == __uuidof(IVisualTreeServiceCallback) ||
-            riid == __uuidof(IVisualTreeServiceCallback2)) {
-            *ppv = static_cast<IVisualTreeServiceCallback2*>(this);
-            AddRef();
-            return S_OK;
+        if (diagnostics_) {
+            diagnostics_->Release();
         }
-        *ppv = nullptr;
-        return E_NOINTERFACE;
     }
 
-    ULONG STDMETHODCALLTYPE AddRef() override {
-        return InterlockedIncrement(&m_ref);
-    }
-
-    ULONG STDMETHODCALLTYPE Release() override {
-        LONG r = InterlockedDecrement(&m_ref);
-        if (r == 0) {
-            delete this;
-        }
-        return r;
-    }
-
-    // Called by XAML: catch-all, and always S_OK. An error return makes XAML
-    // stop reporting changes.
-    HRESULT STDMETHODCALLTYPE OnVisualTreeChange(
-        ParentChildRelation relation, VisualElement element,
-        VisualMutationType mutationType) override {
-        try {
-            if (mutationType == Add) {
-                g_live_handles.fetch_add(1, std::memory_order_relaxed);
-                STYLER_LOG(LogLevel::Debug, L"+ %s (handle %llu)",
-                           element.Type ? element.Type : L"<unknown>",
-                           static_cast<unsigned long long>(element.Handle));
-            } else {
-                STYLER_LOG(LogLevel::Debug, L"- handle %llu",
-                           static_cast<unsigned long long>(element.Handle));
-            }
-
-            ReleaseHandle(element.Handle);
-            if (mutationType == Add) {
-                ReleaseHandle(relation.Parent);
-            }
-        } catch (...) {
-            STYLER_LOG(LogLevel::Error, L"OnVisualTreeChange threw");
-        }
-        return S_OK;
-    }
-
-    HRESULT STDMETHODCALLTYPE OnElementStateChanged(
-        InstanceHandle, VisualElementState, LPCWSTR) noexcept override {
-        return S_OK;
-    }
+    IXamlDiagnostics* diagnostics() const { return diagnostics_; }
+    IXamlDiagnosticsTestHooks* hooks() const { return hooks_; }
 
 private:
-    LONG m_ref = 1;
+    IXamlDiagnostics* diagnostics_;
+    IXamlDiagnosticsTestHooks* hooks_;
 };
 
-VisualTreeWatcher* g_watcher = nullptr;
+// The current session, or nullptr. Written only by OpenDiagnostics/
+// CloseDiagnostics below; read through Diagnostics()/ReleaseHandle - never
+// reach for this directly from another translation unit. std::atomic because
+// the TAP is called from several explorer UI threads (same reasoning as
+// g_site in tap_boundary.cpp - see site.h).
+std::atomic<DiagnosticsSession*> g_session{nullptr};
+
+// Handles successfully released so far this process. Monotonic by
+// construction: only ReleaseHandle's success path touches it, and only ever
+// increments it.
+std::atomic<long> g_released_handles{0};
 
 }  // namespace
 
+void ReleaseHandle(InstanceHandle handle) {
+    if (!handle) {
+        return;  // A root element's parent handle is 0; nothing to release.
+    }
+
+    DiagnosticsSession* session = g_session.load(std::memory_order_acquire);
+    if (!session || !session->hooks()) {
+        return;  // No session open, or hooks unavailable - warned once above.
+    }
+
+    HRESULT hr = session->hooks()->UnregisterInstance(handle);
+    if (SUCCEEDED(hr)) {
+        g_released_handles.fetch_add(1, std::memory_order_relaxed);
+    } else {
+        STYLER_LOG(LogLevel::Error, L"UnregisterInstance(%llu) failed 0x%08X",
+                   static_cast<unsigned long long>(handle),
+                   static_cast<unsigned>(hr));
+    }
+}
+
 long LiveHandleCount() {
-    return g_live_handles.load(std::memory_order_relaxed);
+    return g_released_handles.load(std::memory_order_relaxed);
 }
 
 IXamlDiagnostics* Diagnostics() {
-    return g_diagnostics;
+    DiagnosticsSession* session = g_session.load(std::memory_order_acquire);
+    return session ? session->diagnostics() : nullptr;
 }
 
-HRESULT StartWatching(IUnknown* site) {
+HRESULT OpenDiagnostics(IUnknown* site) {
     if (!site) {
         return E_INVALIDARG;
     }
-    if (g_watcher) {
-        return S_FALSE;
+
+    if (g_session.load(std::memory_order_acquire)) {
+        STYLER_LOG(LogLevel::Info,
+                   L"OpenDiagnostics called with a session already open; "
+                   L"closing and reopening");
+        CloseDiagnostics();
     }
 
-    HRESULT hr = site->QueryInterface(IID_PPV_ARGS(&g_diagnostics));
+    IXamlDiagnostics* diagnostics = nullptr;
+    HRESULT hr = site->QueryInterface(IID_PPV_ARGS(&diagnostics));
     if (FAILED(hr)) {
         STYLER_LOG(LogLevel::Error, L"QI IXamlDiagnostics failed 0x%08X",
                    static_cast<unsigned>(hr));
         return hr;
     }
 
-    if (FAILED(g_diagnostics->QueryInterface(
+    IXamlDiagnosticsTestHooks* hooks = nullptr;
+    if (FAILED(diagnostics->QueryInterface(
             IID_IXamlDiagnosticsTestHooks,
-            reinterpret_cast<void**>(&g_hooks)))) {
-        // Not fatal, but the user must know: without it every reported element
-        // leaks for the life of the explorer process.
+            reinterpret_cast<void**>(&hooks)))) {
+        // Not fatal, but the user must know: without it every reported
+        // element leaks for the life of the explorer process.
         STYLER_LOG(LogLevel::Error,
                    L"IXamlDiagnosticsTestHooks unavailable - elements will "
                    L"leak; report this, it means Windows changed");
-        g_hooks = nullptr;
+        hooks = nullptr;
     }
 
-    IVisualTreeService3* service = nullptr;
-    hr = g_diagnostics->QueryInterface(IID_PPV_ARGS(&service));
-    if (FAILED(hr)) {
-        STYLER_LOG(LogLevel::Error, L"QI IVisualTreeService3 failed 0x%08X",
-                   static_cast<unsigned>(hr));
-        return hr;
-    }
-
-    auto* watcher = new (std::nothrow) VisualTreeWatcher();
-    if (!watcher) {
-        service->Release();
+    auto* session = new (std::nothrow) DiagnosticsSession(diagnostics, hooks);
+    if (!session) {
+        if (hooks) {
+            hooks->Release();
+        }
+        diagnostics->Release();
         return E_OUTOFMEMORY;
     }
 
-    hr = service->AdviseVisualTreeChange(watcher);
-    service->Release();
-
-    if (FAILED(hr)) {
-        STYLER_LOG(LogLevel::Error, L"AdviseVisualTreeChange failed 0x%08X",
-                   static_cast<unsigned>(hr));
-        watcher->Release();
-        return hr;
-    }
-
-    g_watcher = watcher;
-    STYLER_LOG(LogLevel::Info, L"watching the visual tree");
+    g_session.store(session, std::memory_order_release);
+    STYLER_LOG(LogLevel::Info, L"diagnostics session open");
     return S_OK;
 }
 
-void StopWatching() {
-    if (!g_watcher) {
+void CloseDiagnostics() {
+    DiagnosticsSession* session =
+        g_session.exchange(nullptr, std::memory_order_acq_rel);
+    if (!session) {
         return;
     }
-
-    IVisualTreeService3* service = nullptr;
-    if (g_diagnostics &&
-        SUCCEEDED(g_diagnostics->QueryInterface(IID_PPV_ARGS(&service)))) {
-        service->UnadviseVisualTreeChange(g_watcher);
-        service->Release();
-    }
-
-    g_watcher->Release();
-    g_watcher = nullptr;
-
-    if (g_hooks) {
-        g_hooks->Release();
-        g_hooks = nullptr;
-    }
-    if (g_diagnostics) {
-        g_diagnostics->Release();
-        g_diagnostics = nullptr;
-    }
-
-    STYLER_LOG(LogLevel::Info, L"stopped watching");
+    delete session;  // Releases hooks and diagnostics exactly once.
+    STYLER_LOG(LogLevel::Info, L"diagnostics session closed");
 }
 
 }  // namespace styler::tap
@@ -1321,14 +1343,14 @@ Em `tap_boundary.cpp`, inclua `<tap/visual_tree_watcher.h>`. Dentro de `SetSite`
 logo depois de `STYLER_LOG(LogLevel::Info, L"loaded into %s", host);`, some:
 
 ```cpp
-            HRESULT hr = StartWatching(site);
+            HRESULT hr = OpenDiagnostics(site);
             if (FAILED(hr)) {
-                STYLER_LOG(LogLevel::Error, L"StartWatching failed 0x%08X",
+                STYLER_LOG(LogLevel::Error, L"OpenDiagnostics failed 0x%08X",
                            static_cast<unsigned>(hr));
             }
 ```
 
-e no ramo `if (!site)`, antes do `return S_OK`, some `StopWatching();`.
+e no ramo `if (!site)`, antes do `return S_OK`, some `CloseDiagnostics();`.
 
 - [ ] **Step 5: Compilar e fazer o smoke test**
 
@@ -1337,9 +1359,11 @@ cmake --build build
 build\src\cli\taskbar-styler.exe load
 ```
 
-Esperado no log: `watching the visual tree`, e **nenhuma** linha
+Esperado no log: `diagnostics session open`, e **nenhuma** linha
 `IXamlDiagnosticsTestHooks unavailable`. Se ela aparecer, o GUID está errado —
-volte ao Step 1.
+volte ao Step 1. Não há mais linha `watching the visual tree`: nada é
+assinado, então não há o que "vigiar" (ver a nota acima sobre o que fica para
+o Plano 3).
 
 Depois reinicie o Explorador pelo Gerenciador de Tarefas para descarregar a DLL.
 
@@ -1347,7 +1371,7 @@ Depois reinicie o Explorador pelo Gerenciador de Tarefas para descarregar a DLL.
 
 ```bash
 git add src/tap
-git commit -m "feat(tap): recebe a arvore visual e libera os handles"
+git commit -m "feat(tap): abre a sessao de diagnostico e libera os handles"
 ```
 
 ---
@@ -1363,7 +1387,14 @@ A entrega do plano.
   `tests/tap/CMakeLists.txt`
 
 **Interfaces:**
-- Consumes: `Diagnostics()`, `STYLER_LOG`.
+- Consumes: `Diagnostics()`, `ReleaseHandle`, `STYLER_LOG`. `Diagnostics()` só é
+  válido entre um `OpenDiagnostics` bem-sucedido (Task 4) e o
+  `CloseDiagnostics`/`SetSite(nullptr)` seguinte — verifique-o por `nullptr`
+  antes de usar. Cada handle que a travessia obtém de `GetVisualRoots`/
+  `GetChildren` precisa ser passado a `ReleaseHandle` depois de usado (Task 4),
+  senão vaza pela vida do processo explorer (spec §7.2) — a travessia sob
+  demanda não ganha essa liberação de graça só por o Plano 2 ter aberto a
+  sessão de diagnóstico.
 - Produces:
   - `struct styler::tap::TreeNode { std::wstring type; std::wstring name; int one_based_index; std::vector<TreeNode> children; }`
   - `std::wstring styler::tap::FormatTree(const TreeNode& root)` — **pura**.
@@ -1602,6 +1633,11 @@ void BuildNode(IVisualTreeService3* service, InstanceHandle handle,
 
         BuildNode(service, children[i], child, depth + 1);
         out.children.push_back(std::move(child));
+
+        // The diagnostics layer keeps this handle registered until we say
+        // otherwise; every one GetChildren hands out must be released or it
+        // leaks for the life of explorer.exe (spec section 7.2).
+        ReleaseHandle(children[i]);
     }
 
     if (children) {
@@ -1646,6 +1682,8 @@ HRESULT ExportTreeToFile(const std::wstring& path) {
 
         out += FormatTree(root);
         out += L'\n';
+
+        ReleaseHandle(roots[i]);  // Same rule as every child handle above.
     }
 
     if (roots) {
@@ -1670,7 +1708,7 @@ HRESULT ExportTreeToFile(const std::wstring& path) {
 - [ ] **Step 7: Disparar na carga**
 
 Em `tap_boundary.cpp`, inclua `<tap/tree_export.h>` e `<string>`. Dentro de
-`SetSite`, depois do `StartWatching` bem-sucedido, some:
+`SetSite`, depois do `OpenDiagnostics` bem-sucedido, some:
 
 ```cpp
             wchar_t local[MAX_PATH]{};

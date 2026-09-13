@@ -300,6 +300,19 @@ futura do Windows, os elementos vazam.
   da bandeja. Crescimento monotônico indica bug.
 - Se `IXamlDiagnosticsTestHooks` estiver indisponível, o TAP **avisa** em vez de vazar calado.
 
+**Nota (Plano 2 → Plano 3):** liberar um handle de dentro de `OnVisualTreeChange`
+(a assinatura `IVisualTreeServiceCallback2` / `AdviseVisualTreeChange` descrita no fluxo do
+§4.1) não é seguro sem cuidado extra: o aviso chega de dentro do Leave walk do explorer, que
+ainda está visitando a subárvore sendo removida, então liberar ali destrói o objeto no meio da
+travessia. O upstream chama isso de "the one thing that isn't safe" e resolve enfileirando a
+liberação e drenando a fila na thread do dispatcher do host
+(`vendor/upstream/windows-11-taskbar-styler.wh.cpp:11168`, `:18379`, `:18404`). O Plano 2 não
+assina notificação de mudança nenhuma — sua Task 5 só percorre a árvore sob demanda via
+`IVisualTreeService3::GetVisualRoots`/`GetChildren`, e libera cada handle obtido assim
+diretamente, fora de qualquer callback, o que é seguro. A assinatura em si, e o dreno de
+liberação adiada que ela exige para ser segura, ficam para o Plano 3, que é o primeiro a
+precisar de notificação de mudança ao vivo para aplicar estilo incrementalmente.
+
 ### 7.3 Log
 
 `OnVisualTreeChange` dispara por elemento — centenas na abertura da taskbar.
