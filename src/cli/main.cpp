@@ -42,7 +42,12 @@ int CmdLoad() {
         return 1;
     }
 
-    auto r = styler::cli::LoadTap(pid, tap);
+    std::wstring themes = styler::cli::ThemesDir();
+    if (themes.empty()) {
+        wprintf(L"aviso: pasta themes nao encontrada ao lado do executavel; "
+                L"o TAP carrega, mas nao tera temas para aplicar.\n");
+    }
+    auto r = styler::cli::LoadTap(pid, tap, themes);
 
     if (FAILED(r.hr)) {
         // Deliberately no retry loop: a process that keeps trying to load code

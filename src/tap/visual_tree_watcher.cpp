@@ -71,6 +71,11 @@ auto* const g_session =
 // increments it.
 std::atomic<long> g_released_handles{0};
 
+// Written once by OpenDiagnostics, read from any thread afterwards.
+auto* const g_init_data =
+    new std::atomic<std::shared_ptr<const std::wstring>>{
+        std::make_shared<const std::wstring>()};
+
 }  // namespace
 
 void ReleaseHandle(InstanceHandle handle) {
@@ -102,6 +107,10 @@ std::shared_ptr<DiagnosticsSession> AcquireSession() {
     return g_session->load();
 }
 
+std::wstring InitializationData() {
+    return *g_init_data->load();
+}
+
 HRESULT OpenDiagnostics(IUnknown* site) {
     if (!site) {
         return E_INVALIDARG;
@@ -113,6 +122,16 @@ HRESULT OpenDiagnostics(IUnknown* site) {
         STYLER_LOG(LogLevel::Error, L"QI IXamlDiagnostics failed 0x%08X",
                    static_cast<unsigned>(hr));
         return hr;
+    }
+
+    {
+        BSTR data = nullptr;
+        std::wstring value;
+        if (SUCCEEDED(diagnostics->GetInitializationData(&data)) && data) {
+            value.assign(data, SysStringLen(data));
+            SysFreeString(data);
+        }
+        g_init_data->store(std::make_shared<const std::wstring>(std::move(value)));
     }
 
     IXamlDiagnosticsTestHooks* hooks = nullptr;

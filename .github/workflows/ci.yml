@@ -57,3 +57,11 @@ jobs:
         shell: bash
         run: |
           ! grep -rnE 'VirtualAllocEx|WriteProcessMemory|CreateRemoteThread|SetThreadContext|MinHook|Detours|MH_Initialize|DetourAttach' src/
+
+      - name: C++/WinRT so do SDK, sem projecao WinUI
+        shell: bash
+        run: |
+          ! find . -name packages.config -not -path './build/*' | grep .
+          ! grep -rn "winrt/Microsoft.UI" src/
+          # Exactly one include site for the projection: winrt_common.h.
+          test "$(grep -rln '#include <winrt/' src/ | wc -l)" -eq 1

@@ -48,7 +48,8 @@ std::wstring TapDllPath() {
     return path;
 }
 
-LoadResult LoadTap(DWORD pid, const std::wstring& tap_path) {
+LoadResult LoadTap(DWORD pid, const std::wstring& tap_path,
+                   const std::wstring& init_data) {
     LoadResult result;
     result.pid = pid;
 
@@ -73,7 +74,8 @@ LoadResult LoadTap(DWORD pid, const std::wstring& tap_path) {
         swprintf_s(connection, L"VisualDiagConnection%d", i + 1);
 
         HRESULT hr = ixde(connection, pid, L"", tap_path.c_str(),
-                          styler::tap::CLSID_TaskbarStylerTap, nullptr);
+                          styler::tap::CLSID_TaskbarStylerTap,
+                          init_data.empty() ? nullptr : init_data.c_str());
 
         if (hr == kNotFound) {
             continue;  // Slot busy; try the next.
@@ -86,6 +88,26 @@ LoadResult LoadTap(DWORD pid, const std::wstring& tap_path) {
 
     result.hr = kNotFound;
     return result;
+}
+
+std::wstring ThemesDir() {
+    wchar_t exe[MAX_PATH]{};
+    if (!GetModuleFileNameW(nullptr, exe, MAX_PATH)) {
+        return L"";
+    }
+    std::wstring dir(exe);
+    size_t slash = dir.find_last_of(L'\\');
+    if (slash == std::wstring::npos) {
+        return L"";
+    }
+    dir.resize(slash + 1);
+    dir += L"themes";
+    DWORD attrs = GetFileAttributesW(dir.c_str());
+    if (attrs == INVALID_FILE_ATTRIBUTES ||
+        !(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+        return L"";
+    }
+    return dir;
 }
 
 std::wstring DescribeHresult(HRESULT hr) {

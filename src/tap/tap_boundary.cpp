@@ -32,6 +32,7 @@
 #include <tap/thread_init.h>
 #include <tap/tree_export.h>
 #include <tap/visual_tree_watcher.h>
+#include <tap/winrt_common.h>
 
 namespace styler::tap {
 
@@ -46,6 +47,30 @@ std::atomic<IUnknown*> g_site{nullptr};
 
 void WINAPI InitThunkPublic(void*) {
     InitializeForCurrentThread();
+}
+
+// Proves, once per load, that the C++/WinRT projection works on a real XAML
+// object inside explorer: GetUiLayer returns the diagnostics adorner Grid
+// (spike: S_OK, detached, zero children). If this line ever stops logging
+// "Windows.UI.Xaml.Controls.Grid", every later task's assumption is gone.
+void ProbeWinRt(const std::shared_ptr<DiagnosticsSession>& session) {
+    try {
+        ::IInspectable* raw = nullptr;
+        HRESULT hr = session->diagnostics()->GetUiLayer(&raw);
+        if (FAILED(hr) || !raw) {
+            STYLER_LOG(LogLevel::Error, L"GetUiLayer failed 0x%08X",
+                       static_cast<unsigned>(hr));
+            return;
+        }
+        auto layer = InspectableFromRaw(raw);
+        STYLER_LOG(LogLevel::Info, L"winrt ok: %s",
+                   winrt::get_class_name(layer).c_str());
+    } catch (winrt::hresult_error const& ex) {
+        STYLER_LOG(LogLevel::Error, L"ProbeWinRt hresult 0x%08X",
+                   static_cast<unsigned>(ex.code()));
+    } catch (...) {
+        STYLER_LOG(LogLevel::Error, L"ProbeWinRt threw");
+    }
 }
 
 class TaskbarStylerTap : public IObjectWithSite {
@@ -122,6 +147,12 @@ public:
                                    L"ExportTreeToFile failed 0x%08X",
                                    static_cast<unsigned>(export_hr));
                     }
+                }
+
+                STYLER_LOG(LogLevel::Info, L"init data: %s",
+                           InitializationData().c_str());
+                if (auto session = AcquireSession()) {
+                    ProbeWinRt(session);
                 }
             }
         } catch (...) {

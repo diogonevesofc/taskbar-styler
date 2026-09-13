@@ -6,6 +6,7 @@
 #include <xamlom.h>
 
 #include <memory>
+#include <string>
 
 namespace styler::tap {
 
@@ -112,5 +113,11 @@ void ReleaseHandle(InstanceHandle handle);
 // elements across time (via change notifications) instead of releasing them
 // immediately after use.
 long ReleasedHandleCount();
+
+// The initialization string the loader passed to InitializeXamlDiagnosticsEx
+// (today: the absolute themes directory), read once by OpenDiagnostics.
+// Empty when none was passed. Safe to call from any thread after
+// OpenDiagnostics returned.
+std::wstring InitializationData();
 
 }  // namespace styler::tap

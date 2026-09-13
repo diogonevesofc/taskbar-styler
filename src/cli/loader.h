@@ -20,9 +20,14 @@ DWORD FindTaskbarPid();
 // Empty when it is not there.
 std::wstring TapDllPath();
 
-// Asks the XAML framework inside `pid` to load our TAP. This is the whole
-// trick: the OS does the loading, so no injection API is used anywhere.
-LoadResult LoadTap(DWORD pid, const std::wstring& tap_path);
+// Loads the TAP into `pid`. `init_data` is handed to the TAP verbatim through
+// IXamlDiagnostics::GetInitializationData - today it carries the absolute
+// path of the themes directory. May be empty.
+LoadResult LoadTap(DWORD pid, const std::wstring& tap_path,
+                   const std::wstring& init_data);
+
+// <directory of this exe>\themes, or empty when that directory does not exist.
+std::wstring ThemesDir();
 
 std::wstring DescribeHresult(HRESULT hr);
 

@@ -19,6 +19,16 @@ add_library(taskbar_styler_tap MODULE
 )
 target_include_directories(taskbar_styler_tap PUBLIC ..)
 target_link_libraries(taskbar_styler_tap PRIVATE taskbar_styler_tap_lib)
+
+# C++/WinRT comes from the Windows SDK's pre-generated headers (no NuGet, no
+# cppwinrt.exe step). WindowsApp.lib is the umbrella import library that
+# resolves the RoXxx activation entry points those headers call. /bigobj
+# because a TU that includes the XAML projection routinely exceeds the
+# default 65k-section limit.
+target_link_libraries(taskbar_styler_tap PRIVATE WindowsApp.lib)
+target_compile_definitions(taskbar_styler_tap PRIVATE WINRT_LEAN_AND_MEAN)
+target_compile_options(taskbar_styler_tap PRIVATE /bigobj)
+
 set_target_properties(taskbar_styler_tap PROPERTIES
   OUTPUT_NAME "TaskbarStyler.Tap"
   PREFIX ""
