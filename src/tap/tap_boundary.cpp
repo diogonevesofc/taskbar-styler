@@ -123,6 +123,15 @@ public:
             site->AddRef();
             g_site.store(site, std::memory_order_release);
 
+            // spike-standing-crash: a second SetSite(site) (e.g. a second
+            // `taskbar-styler load` without restarting Explorer) must not
+            // reopen the diagnostics session while the old subscription is
+            // still registered against the old one - OpenDiagnostics closing
+            // that session out from under it leaves g_subscription pointing
+            // at a dead service/callback, and no new subscription can start
+            // until Explorer restarts (measured: spike E8b, "second load").
+            StopSubscription();
+
             wchar_t host[MAX_PATH]{};
             GetModuleFileNameW(nullptr, host, MAX_PATH);
             STYLER_LOG(LogLevel::Info, L"loaded into %s", host);

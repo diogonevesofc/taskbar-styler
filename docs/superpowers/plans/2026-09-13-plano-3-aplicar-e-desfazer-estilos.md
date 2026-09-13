@@ -2005,10 +2005,43 @@ bool ElementHasState(ElementId) {
 namespace styler::tap {
 
 // Subscribes to IVisualTreeService3::AdviseVisualTreeChange for the life of
-// the session. The initial flood arrives synchronously inside Start on the
-// calling thread (measured: spike, Plano 2); later reports arrive on
-// whichever UI thread mutates its tree. Idempotent: a second Start with a
-// live subscription is a no-op that returns S_FALSE.
+// the session.
+//
+// Two upstream findings shape this (both from
+// vendor/upstream/windows-11-taskbar-styler.wh.cpp, and both reproduced here
+// the hard way - see spike-standing-crash.md, the post-mortem for why the
+// first version of this task, `b919419`, crashed explorer.exe):
+//
+// - Composition diagnostics corrupt the heap (vendor:10904-10914). XAML
+//   creates a second, unrelated diagnostics object for every
+//   Windows.UI.Composition.* visual it reports (a DirectComposition visual,
+//   not a XAML element), and that object rebuilds a process-wide walker with
+//   no locking whenever one is added on ANY explorer UI thread - Task View,
+//   for example - while another thread is inside the same code. Upstream
+//   keeps it from ever being created by answering XAML's one registry read
+//   (made once, from inside AdviseVisualTreeChange) through inline hooks on
+//   RegOpenKeyExW/RegQueryValueExW; this project allows no injection APIs,
+//   so StartSubscription instead requires the real
+//   HKLM\Software\Microsoft\XAML\Debug\DisableCompositionDiag value already
+//   be 1 - written once, with the user's consent, by `taskbar-styler setup`
+//   (elevated) - and fails closed (E_NOT_VALID_STATE, no subscription;
+//   exporting the tree still works) when it is not. change_subscription.cpp
+//   also never resolves a reported Windows.UI.Composition.* handle even
+//   when the value is set, as defense in depth: that filter alone stops the
+//   deterministic crash (resolving one such handle is what kills the
+//   process), but only the registry value stops the probabilistic heap
+//   race, since that race happens inside
+//   XamlDiagnostics::CreateCompVisualDiag, before our callback ever runs.
+// - Calling AdviseVisualTreeChange from the calling (UI) thread hangs in
+//   Advising::RunOnUIThread "sometimes" (vendor:11013-11030) - measured here
+//   too (process stayed alive but stopped responding, not a crash). Upstream
+//   calls Advise from a new thread instead; StartSubscription does the same
+//   via CreateThread and returns once that thread exists, without waiting
+//   for the initial flood - it still arrives synchronously inside Advise,
+//   just on that new thread rather than the caller's.
+//
+// Idempotent: a second Start with a live subscription is a no-op that
+// returns S_FALSE.
 HRESULT StartSubscription();
 
 // Unadvises. If Unadvise fails the callback object is leaked on purpose -
@@ -2024,6 +2057,7 @@ void StopSubscription();
 #include <tap/change_subscription.h>
 
 #include <atomic>
+#include <cwchar>
 #include <memory>
 
 #include <tap/element_registry.h>
@@ -2036,6 +2070,13 @@ void StopSubscription();
 
 namespace styler::tap {
 namespace {
+
+// A Windows.UI.Composition.* handle is never resolved - see
+// change_subscription.h for why. Its handles are still queued for release
+// exactly like any other Add.
+constexpr wchar_t kCompositionPrefix[] = L"Windows.UI.Composition.";
+constexpr size_t kCompositionPrefixLen =
+    (sizeof(kCompositionPrefix) / sizeof(wchar_t)) - 1;
 
 // The standing callback. Heap-allocated with a real reference count: XAML
 // holds one reference while advised, we hold one while subscribed. Unlike
@@ -2088,15 +2129,25 @@ public:
             }
             try {
                 if (mutationType == Add) {
-                    ::IInspectable* raw = nullptr;
-                    HRESULT hr = session_->diagnostics()->GetIInspectableFromHandle(
-                        element.Handle, &raw);
-                    if (SUCCEEDED(hr) && raw) {
-                        wf::IInspectable obj = InspectableFromRaw(raw);
-                        ElementId id = GetOrCreateElementId(element.Handle, obj);
-                        if (id != ElementId::None) {
-                            if (auto fe = obj.try_as<wux::FrameworkElement>()) {
-                                OnElementAdded(id, fe, element.Type);
+                    if (element.Type &&
+                        wcsncmp(element.Type, kCompositionPrefix,
+                                kCompositionPrefixLen) == 0) {
+                        // vendor:10904-10914: resolving this handle is what
+                        // crashes the process. Never call
+                        // GetIInspectableFromHandle on it.
+                        STYLER_LOG(LogLevel::Debug,
+                                   L"skipped composition visual %s", element.Type);
+                    } else {
+                        ::IInspectable* raw = nullptr;
+                        HRESULT hr = session_->diagnostics()->GetIInspectableFromHandle(
+                            element.Handle, &raw);
+                        if (SUCCEEDED(hr) && raw) {
+                            wf::IInspectable obj = InspectableFromRaw(raw);
+                            ElementId id = GetOrCreateElementId(element.Handle, obj);
+                            if (id != ElementId::None) {
+                                if (auto fe = obj.try_as<wux::FrameworkElement>()) {
+                                    OnElementAdded(id, fe, element.Type);
+                                }
                             }
                         }
                     }
@@ -2153,6 +2204,25 @@ HRESULT StartSubscription() {
     if (g_subscription->load()) {
         return S_FALSE;
     }
+
+    // Fail closed: see the header comment for why. The Debug filter above is
+    // defense in depth, not a substitute for this - it only stops the
+    // deterministic crash, not the heap race, which happens before our
+    // callback is ever called.
+    DWORD disabled = 0;
+    DWORD disabled_size = sizeof(disabled);
+    LONG reg_st = RegGetValueW(
+        HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\XAML\\Debug",
+        L"DisableCompositionDiag", RRF_RT_REG_DWORD, nullptr, &disabled,
+        &disabled_size);
+    if (reg_st != ERROR_SUCCESS || disabled != 1) {
+        STYLER_LOG(LogLevel::Error,
+                   L"composition diagnostics are enabled - run \"taskbar-styler "
+                   L"setup\" once (as administrator) to disable them; not "
+                   L"subscribing");
+        return E_NOT_VALID_STATE;
+    }
+
     std::shared_ptr<DiagnosticsSession> session = AcquireSession();
     if (!session) {
         return E_NOT_VALID_STATE;
@@ -2186,23 +2256,52 @@ HRESULT StartSubscription() {
         return S_FALSE;  // Lost the race to another SetSite.
     }
 
-    // The initial flood arrives inside this call, on this thread.
-    hr = service->AdviseVisualTreeChange(sub->callback);
-    if (FAILED(hr)) {
-        STYLER_LOG(LogLevel::Error, L"AdviseVisualTreeChange failed 0x%08X",
-                   static_cast<unsigned>(hr));
+    // vendor:11013-11030: calling Advise from this thread hangs in
+    // Advising::RunOnUIThread "sometimes" - measured here too. Run it on a
+    // new thread instead, and do not wait for it: the initial flood still
+    // arrives synchronously inside Advise, just on that thread.
+    sub->callback->AddRef();  // The thread's reference; released when it ends.
+    HANDLE thread = CreateThread(
+        nullptr, 0,
+        [](LPVOID param) -> DWORD {
+            auto* s = static_cast<Subscription*>(param);
+            HRESULT advise_hr = s->service->AdviseVisualTreeChange(s->callback);
+            if (FAILED(advise_hr)) {
+                STYLER_LOG(LogLevel::Error,
+                           L"AdviseVisualTreeChange failed 0x%08X",
+                           static_cast<unsigned>(advise_hr));
+                g_subscription->store(nullptr);
+                // Advise can register, walk, and then fail: unadvise
+                // regardless and keep the callback alive if that fails too
+                // (same stance as ReleaseOnExit in tree_export.cpp).
+                if (SUCCEEDED(
+                        s->service->UnadviseVisualTreeChange(s->callback))) {
+                    s->callback->Release();  // Ours.
+                }
+                s->service->Release();
+                s->callback->Release();  // The thread's reference.
+                delete s;
+                return 0;
+            }
+            STYLER_LOG(LogLevel::Info, L"subscription started on thread %lu",
+                       GetCurrentThreadId());
+            s->callback->Release();  // The thread's reference only - ours
+                                      // stays live until StopSubscription.
+            return 0;
+        },
+        sub, 0, nullptr);
+    if (!thread) {
+        DWORD err = GetLastError();
+        STYLER_LOG(LogLevel::Error, L"CreateThread for Advise failed %lu", err);
         g_subscription->store(nullptr);
-        // Advise can register, walk, and then fail: unadvise regardless and
-        // keep the callback alive if that fails too.
-        if (SUCCEEDED(service->UnadviseVisualTreeChange(sub->callback))) {
-            sub->callback->Release();
-        }
+        sub->callback->Release();  // The thread's reference, never started.
+        sub->callback->Release();  // Ours.
         service->Release();
         delete sub;
-        return hr;
+        return HRESULT_FROM_WIN32(err);
     }
-    STYLER_LOG(LogLevel::Info, L"subscription started on thread %lu",
-               GetCurrentThreadId());
+    CloseHandle(thread);
+    STYLER_LOG(LogLevel::Info, L"advise thread created");
     return S_OK;
 }
 
@@ -2227,7 +2326,7 @@ void StopSubscription() {
 }  // namespace styler::tap
 ```
 
-- [ ] **Step 8: Ligar no `SetSite`**
+- [ ] **Step 8: Ligar no `SetSite`, o registro de elementos sem referência através de `make_weak`, e o CLI `setup`**
 
 Em `tap_boundary.cpp`, incluir `<tap/change_subscription.h>`. No `SetSite`, **depois** do bloco do `ExportTreeToFile` e do `ProbeWinRt` (o instantâneo faz o próprio Advise/Unadvise e precisa ter terminado antes de a assinatura permanente começar — duas assinaturas ao mesmo tempo é território não medido):
 
@@ -2239,17 +2338,25 @@ Em `tap_boundary.cpp`, incluir `<tap/change_subscription.h>`. No `SetSite`, **de
                 }
 ```
 
-No ramo `if (!site)`, antes de `CloseDiagnostics()`: `StopSubscription();`.
+Com um site não-nulo, **antes** de `OpenDiagnostics(site)`: `StopSubscription();` — um segundo `SetSite(site)` (por exemplo um segundo `taskbar-styler load` sem reiniciar o Explorer) não pode deixar `OpenDiagnostics` fechar e reabrir a sessão de diagnóstico com a assinatura antiga ainda registrada contra a antiga: sem isso, `g_subscription` fica preso a um `service`/`callback` mortos e nenhuma assinatura nova consegue subir até o Explorer reiniciar (medido no spike, "segundo load").
 
-`src/tap/CMakeLists.txt`: os novos `.cpp` (menos `release_policy.cpp`) entram no alvo MODULE.
+No ramo `if (!site)`, antes de `CloseDiagnostics()`: `StopSubscription();` (inalterado).
+
+`element_registry.cpp`: `GetOrCreateElementId` não pode segurar uma referência para dentro de `t_ids` através de `winrt::make_weak` — a chamada reentra no XAML, que pode reportar outra mutação nesta mesma thread, e esse reporte pode inserir ou apagar em `t_ids` e re-hashear o mapa, deixando a referência pendurada. Procure com `find`, monte o `weak_ref` numa local, e só então escreva de volta.
+
+CLI (`src/cli/main.cpp`): comando `setup` — grava `HKLM\Software\Microsoft\XAML\Debug\DisableCompositionDiag=1` via `reg.exe` elevado (`ShellExecuteExW`, verbo `runas`), explica o que o valor faz e como desfazer. `status` mostra se está em 1; `load` avisa quando não está ("o TAP vai exportar a árvore, mas não vai assinar mudanças").
+
+`src/tap/CMakeLists.txt`: os novos `.cpp` (menos `release_policy.cpp`) entram no alvo MODULE; `Advapi32.lib` entra no link do MODULE (`RegGetValueW`). `src/cli/CMakeLists.txt`: `Advapi32.lib` e `Shell32.lib` entram no link do CLI (`RegGetValueW`, `ShellExecuteExW`).
 
 - [ ] **Step 9: Build, testes e smoke**
 
+Antes de tudo: `taskbar-styler.exe setup`, uma vez, elevado — sem `DisableCompositionDiag=1` a assinatura permanente se recusa a começar (de propósito).
+
 Reinicie o Explorer, então `cmake --build build`, `ctest --test-dir build --output-on-failure`, `build\src\cli\taskbar-styler.exe load`.
 
-No log, na ordem: `tree exported …`, `winrt ok …`, `subscription started on thread <N>`. Depois, com `Debug` ligado (edite `SetLogLevel` temporariamente ou espere a Task 7 expor o nível no config — para esta task, um `SetLogLevel(LogLevel::Debug)` provisório no `SetSite` é aceitável **desde que saia antes do commit**): centenas de `add …`, e ~200 ms depois um `drained N handles (M released so far)`. Abra o menu Iniciar e a central de notificações: novos `add`, e outro `drained`. Verifique que `released so far` cresce a cada rajada e **para de crescer** entre rajadas — isso é o critério 5 da spec em miniatura. Anote no relatório os três números (elementos do lote inicial, liberados após o primeiro dreno, liberados após abrir o Iniciar).
+No log, na ordem: `tree exported …`, `winrt ok …`, `advise thread created`, `subscription started on thread <N>` — **N é uma thread diferente** da que rodou `SetSite` (a Advise agora roda numa thread criada com `CreateThread`, nunca na pilha do `SetSite`). Depois, com `Debug` ligado (edite `SetLogLevel` temporariamente ou espere a Task 7 expor o nível no config — para esta task, um `SetLogLevel(LogLevel::Debug)` provisório no `SetSite` é aceitável **desde que saia antes do commit**): centenas de `add …`, **zero** `skipped composition visual` (a chave do registro já impede as diagnostics de composition de existirem — o filtro só pula algo se a chave não estiver em 1), e ~200 ms depois um `drained N handles, M held (K released so far)`. Abra o menu Iniciar, a central de notificações e o Task View: novos `add`, e outro `drained`, sem nenhuma linha `ERR` e sem o Explorer travar (`Responding: True`) ou cair. Rode `load` de novo, sem reiniciar o Explorer: espere `subscription stopped` seguido de um novo `subscription started` (a Task View pode deixar uma rajada sem drenar na sua própria thread, se nenhuma mutação nova chegar nela depois para reavaliar a fila — comportamento pré-existente do dreno adiado, não uma regressão desta correção). Anote no relatório os três números (elementos do lote inicial, liberados após o primeiro dreno, liberados após abrir o Iniciar).
 
-O que **não** dá para exercitar: `StopSubscription` (nenhum caminho vivo chama `SetSite(nullptr)`, como no Plano 2). Diga isso no relatório em vez de sugerir cobertura.
+O que **não** dá para exercitar sem tocar em HKLM de propósito: o ramo de falha do portão do registro (teste local, com o nome do valor trocado para algo inexistente, revertido antes do commit).
 
 - [ ] **Step 10: Commit**
 
@@ -3643,7 +3750,7 @@ A fronteira entre processos do §4.2, exatamente como a spec desenha: um arquivo
   - `ipc.h`: `constexpr wchar_t kReloadEventName[] = L"Local\\TaskbarStyler.Reload";` e `inline std::wstring ConfigPath()` (sai de `theme_session`, para o CLI usar o mesmo).
   - `HRESULT StartReloadWatch()` / `void StopReloadWatch()` — o TAP cria o Event (auto-reset) e espera nele numa thread de pool.
   - `void ReloadThemeOnUiThread()` — a sequência de recarga; roda na thread de UI da taskbar.
-  - CLI: `apply <ThemeId>`, `reset`, `list`, `status` (estendido).
+  - CLI: `apply <ThemeId>`, `reset`, `list`, `status` (estendido), `setup` (Task 4 — grava `DisableCompositionDiag=1` elevado).
   - `LoadConfiguredTheme` passa a honrar `osFeatureVariant` (Squircle).
 
 - [ ] **Step 1: `ipc.h`**

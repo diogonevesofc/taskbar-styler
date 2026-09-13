@@ -30,7 +30,9 @@ target_link_libraries(taskbar_styler_tap PRIVATE taskbar_styler_tap_lib)
 # resolves the RoXxx activation entry points those headers call. /bigobj
 # because a TU that includes the XAML projection routinely exceeds the
 # default 65k-section limit.
-target_link_libraries(taskbar_styler_tap PRIVATE WindowsApp.lib)
+# Advapi32.lib resolves RegGetValueW: change_subscription.cpp's
+# DisableCompositionDiag gate.
+target_link_libraries(taskbar_styler_tap PRIVATE WindowsApp.lib Advapi32.lib)
 target_compile_definitions(taskbar_styler_tap PRIVATE WINRT_LEAN_AND_MEAN)
 target_compile_options(taskbar_styler_tap PRIVATE /bigobj)
 

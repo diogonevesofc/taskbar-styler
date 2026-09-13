@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <windows.h>
 
+#include <shellapi.h>
+
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -9,10 +11,27 @@
 
 namespace {
 
+// Mirrors the gate in src/tap/change_subscription.cpp: the standing
+// subscription refuses to start unless this is 1 (spike-standing-crash.md,
+// vendor:10904-10914 - composition diagnostics corrupt the heap). Read-only
+// here; `setup` is the only thing that writes it, and only with consent and
+// elevation.
+constexpr wchar_t kCompDiagKey[] = L"Software\\Microsoft\\XAML\\Debug";
+constexpr wchar_t kCompDiagValue[] = L"DisableCompositionDiag";
+
+bool CompositionDiagDisabled() {
+    DWORD value = 0;
+    DWORD size = sizeof(value);
+    LONG st = RegGetValueW(HKEY_LOCAL_MACHINE, kCompDiagKey, kCompDiagValue,
+                           RRF_RT_REG_DWORD, nullptr, &value, &size);
+    return st == ERROR_SUCCESS && value == 1;
+}
+
 int Usage() {
     wprintf(L"uso: taskbar-styler <comando>\n\n");
     wprintf(L"  load     carrega o TAP no explorer.exe\n");
     wprintf(L"  status   mostra o estado\n");
+    wprintf(L"  setup    grava DisableCompositionDiag=1 (precisa de administrador)\n");
     wprintf(L"  unload   explica por que nao ha descarregamento\n");
     return 2;
 }
@@ -59,6 +78,11 @@ int CmdLoad() {
     }
 
     wprintf(L"carregado via %s\n", r.connection.c_str());
+    if (!CompositionDiagDisabled()) {
+        wprintf(L"aviso: DisableCompositionDiag nao esta em 1; o TAP vai "
+                L"exportar a arvore, mas nao vai assinar mudancas (rode "
+                L"\"taskbar-styler setup\" como administrador).\n");
+    }
     wprintf(L"log em %%LOCALAPPDATA%%\\TaskbarStyler\\log.txt\n");
     return 0;
 }
@@ -83,6 +107,57 @@ int CmdStatus() {
             wprintf(L"log: ainda nao existe (o TAP nunca carregou)\n");
         }
     }
+    wprintf(CompositionDiagDisabled()
+                ? L"composition diagnostics: desativadas "
+                  L"(DisableCompositionDiag=1) - a assinatura permanente pode "
+                  L"iniciar\n"
+                : L"composition diagnostics: ativadas - a assinatura "
+                  L"permanente nao inicia; rode \"taskbar-styler setup\" como "
+                  L"administrador\n");
+    return 0;
+}
+
+int CmdSetup() {
+    wprintf(L"Isto grava HKLM\\%s\\%s = 1.\n\n", kCompDiagKey, kCompDiagValue);
+    wprintf(L"E o valor que o Windows.UI.Xaml.dll le uma unica vez, de dentro "
+            L"do proprio\nAdviseVisualTreeChange, para decidir se cria as "
+            L"diagnostics de composition.\nSem ele, um "
+            L"Windows.UI.Composition.SpriteVisual adicionado por qualquer\n"
+            L"thread de UI do explorer.exe (o Task View, por exemplo) pode "
+            L"corromper o\nheap enquanto a assinatura permanente do TAP esta "
+            L"ativa (vendor:10904-10914).\n\n"
+            L"E estado global da maquina - afeta as diagnostics XAML de "
+            L"qualquer processo,\nnao so o explorer.exe. Para desfazer, "
+            L"elevado:\n"
+            L"  reg delete \"HKLM\\%s\" /v %s /f\n\n",
+            kCompDiagKey, kCompDiagValue);
+
+    std::wstring params = std::wstring(L"add \"HKLM\\") + kCompDiagKey +
+                          L"\" /v " + kCompDiagValue +
+                          L" /t REG_DWORD /d 1 /f";
+
+    SHELLEXECUTEINFOW sei{};
+    sei.cbSize = sizeof(sei);
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+    sei.lpVerb = L"runas";
+    sei.lpFile = L"reg.exe";
+    sei.lpParameters = params.c_str();
+    sei.nShow = SW_HIDE;
+
+    if (!ShellExecuteExW(&sei) || !sei.hProcess) {
+        wprintf(L"erro: nao foi possivel elevar (UAC recusado?): %lu\n",
+                GetLastError());
+        return 1;
+    }
+    WaitForSingleObject(sei.hProcess, INFINITE);
+    DWORD exit_code = 1;
+    GetExitCodeProcess(sei.hProcess, &exit_code);
+    CloseHandle(sei.hProcess);
+    if (exit_code != 0) {
+        wprintf(L"reg.exe saiu com codigo %lu\n", exit_code);
+        return 1;
+    }
+    wprintf(L"%s=1 gravado.\n", kCompDiagValue);
     return 0;
 }
 
@@ -106,6 +181,9 @@ int wmain(int argc, wchar_t** argv) {
     }
     if (wcscmp(argv[1], L"status") == 0) {
         return CmdStatus();
+    }
+    if (wcscmp(argv[1], L"setup") == 0) {
+        return CmdSetup();
     }
     if (wcscmp(argv[1], L"unload") == 0) {
         return CmdUnload();

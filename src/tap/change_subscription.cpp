@@ -2,6 +2,7 @@
 #include <tap/change_subscription.h>
 
 #include <atomic>
+#include <cwchar>
 #include <memory>
 
 #include <tap/element_registry.h>
@@ -14,6 +15,13 @@
 
 namespace styler::tap {
 namespace {
+
+// spike-standing-crash E7/E8a: a Windows.UI.Composition.* handle is never
+// resolved - see change_subscription.h for why. Its handles are still
+// queued for release exactly like any other Add.
+constexpr wchar_t kCompositionPrefix[] = L"Windows.UI.Composition.";
+constexpr size_t kCompositionPrefixLen =
+    (sizeof(kCompositionPrefix) / sizeof(wchar_t)) - 1;
 
 // The standing callback. Heap-allocated with a real reference count: XAML
 // holds one reference while advised, we hold one while subscribed. Unlike
@@ -66,15 +74,25 @@ public:
             }
             try {
                 if (mutationType == Add) {
-                    ::IInspectable* raw = nullptr;
-                    HRESULT hr = session_->diagnostics()->GetIInspectableFromHandle(
-                        element.Handle, &raw);
-                    if (SUCCEEDED(hr) && raw) {
-                        wf::IInspectable obj = InspectableFromRaw(raw);
-                        ElementId id = GetOrCreateElementId(element.Handle, obj);
-                        if (id != ElementId::None) {
-                            if (auto fe = obj.try_as<wux::FrameworkElement>()) {
-                                OnElementAdded(id, fe, element.Type);
+                    if (element.Type &&
+                        wcsncmp(element.Type, kCompositionPrefix,
+                                kCompositionPrefixLen) == 0) {
+                        // vendor:10904-10914: resolving this handle is what
+                        // crashes the process. Never call
+                        // GetIInspectableFromHandle on it.
+                        STYLER_LOG(LogLevel::Debug,
+                                   L"skipped composition visual %s", element.Type);
+                    } else {
+                        ::IInspectable* raw = nullptr;
+                        HRESULT hr = session_->diagnostics()->GetIInspectableFromHandle(
+                            element.Handle, &raw);
+                        if (SUCCEEDED(hr) && raw) {
+                            wf::IInspectable obj = InspectableFromRaw(raw);
+                            ElementId id = GetOrCreateElementId(element.Handle, obj);
+                            if (id != ElementId::None) {
+                                if (auto fe = obj.try_as<wux::FrameworkElement>()) {
+                                    OnElementAdded(id, fe, element.Type);
+                                }
                             }
                         }
                     }
@@ -131,6 +149,25 @@ HRESULT StartSubscription() {
     if (g_subscription->load()) {
         return S_FALSE;
     }
+
+    // Fail closed: see change_subscription.h for why. The Debug filter above
+    // is defense in depth, not a substitute for this - it only stops the
+    // deterministic crash, not the heap race, which happens before our
+    // callback is ever called.
+    DWORD disabled = 0;
+    DWORD disabled_size = sizeof(disabled);
+    LONG reg_st = RegGetValueW(
+        HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\XAML\\Debug",
+        L"DisableCompositionDiag", RRF_RT_REG_DWORD, nullptr, &disabled,
+        &disabled_size);
+    if (reg_st != ERROR_SUCCESS || disabled != 1) {
+        STYLER_LOG(LogLevel::Error,
+                   L"composition diagnostics are enabled - run \"taskbar-styler "
+                   L"setup\" once (as administrator) to disable them; not "
+                   L"subscribing");
+        return E_NOT_VALID_STATE;
+    }
+
     std::shared_ptr<DiagnosticsSession> session = AcquireSession();
     if (!session) {
         return E_NOT_VALID_STATE;
@@ -164,23 +201,53 @@ HRESULT StartSubscription() {
         return S_FALSE;  // Lost the race to another SetSite.
     }
 
-    // The initial flood arrives inside this call, on this thread.
-    hr = service->AdviseVisualTreeChange(sub->callback);
-    if (FAILED(hr)) {
-        STYLER_LOG(LogLevel::Error, L"AdviseVisualTreeChange failed 0x%08X",
-                   static_cast<unsigned>(hr));
+    // vendor:11013-11030: calling Advise from this thread hangs in
+    // Advising::RunOnUIThread "sometimes" - measured here too
+    // (spike-standing-crash.md E3-E5). Run it on a new thread instead, and
+    // do not wait for it: the initial flood still arrives synchronously
+    // inside Advise, just on that thread.
+    sub->callback->AddRef();  // The thread's reference; released when it ends.
+    HANDLE thread = CreateThread(
+        nullptr, 0,
+        [](LPVOID param) -> DWORD {
+            auto* s = static_cast<Subscription*>(param);
+            HRESULT advise_hr = s->service->AdviseVisualTreeChange(s->callback);
+            if (FAILED(advise_hr)) {
+                STYLER_LOG(LogLevel::Error,
+                           L"AdviseVisualTreeChange failed 0x%08X",
+                           static_cast<unsigned>(advise_hr));
+                g_subscription->store(nullptr);
+                // Advise can register, walk, and then fail: unadvise
+                // regardless and keep the callback alive if that fails too
+                // (same stance as ReleaseOnExit in tree_export.cpp).
+                if (SUCCEEDED(
+                        s->service->UnadviseVisualTreeChange(s->callback))) {
+                    s->callback->Release();  // Ours.
+                }
+                s->service->Release();
+                s->callback->Release();  // The thread's reference.
+                delete s;
+                return 0;
+            }
+            STYLER_LOG(LogLevel::Info, L"subscription started on thread %lu",
+                       GetCurrentThreadId());
+            s->callback->Release();  // The thread's reference only - ours
+                                      // stays live until StopSubscription.
+            return 0;
+        },
+        sub, 0, nullptr);
+    if (!thread) {
+        DWORD err = GetLastError();
+        STYLER_LOG(LogLevel::Error, L"CreateThread for Advise failed %lu", err);
         g_subscription->store(nullptr);
-        // Advise can register, walk, and then fail: unadvise regardless and
-        // keep the callback alive if that fails too.
-        if (SUCCEEDED(service->UnadviseVisualTreeChange(sub->callback))) {
-            sub->callback->Release();
-        }
+        sub->callback->Release();  // The thread's reference, never started.
+        sub->callback->Release();  // Ours.
         service->Release();
         delete sub;
-        return hr;
+        return HRESULT_FROM_WIN32(err);
     }
-    STYLER_LOG(LogLevel::Info, L"subscription started on thread %lu",
-               GetCurrentThreadId());
+    CloseHandle(thread);
+    STYLER_LOG(LogLevel::Info, L"advise thread created");
     return S_OK;
 }
 

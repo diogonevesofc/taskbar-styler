@@ -245,6 +245,20 @@ byte, sem dependência de MinHook ou Detours.
 **Consequência:** a v1 não escreve um único byte na memória de código de nenhum processo. Nem
 injeção, nem detour — apenas APIs sancionadas.
 
+O mesmo vale para as diagnostics de composition que o `Windows.UI.Xaml.dll` cria para todo
+`Windows.UI.Composition.*` reportado à assinatura permanente (Plano 3, Task 4): elas rebaixam
+um walker de processo inteiro sem lock sempre que um visual de composition é adicionado por
+qualquer thread de UI do explorer, o que corrompe o heap (`vendor:10904-10914`). O upstream
+evita a criação respondendo, com hook, a uma leitura de registro que o próprio
+`Windows.UI.Xaml.dll` faz de dentro de `AdviseVisualTreeChange`
+(`HKLM\Software\Microsoft\XAML\Debug\DisableCompositionDiag`). Este projeto não faz hook de
+nada, então em vez disso exige que o valor **real** já esteja em `1`, gravado uma única vez,
+com consentimento e elevação, pelo comando `taskbar-styler setup` — e recusa-se a assinar
+enquanto não estiver (a exportação da árvore continua funcionando; só a assinatura permanente
+fica desligada). O mesmo achado do upstream também documenta por que `AdviseVisualTreeChange`
+roda numa thread própria em vez da thread de UI que chama `SetSite`: chamá-la de lá trava às
+vezes dentro de `Advising::RunOnUIThread` (`vendor:11013-11030`).
+
 ### 6.3 Reinício do explorer
 
 Quando o explorer recria a taskbar, o Windows faz broadcast de
@@ -334,6 +348,12 @@ mais: nunca libera handle. É por isso que o Plano 2 não precisa do dreno adiad
 que **fica de pé** ao longo do tempo, e o dreno que ela exige para ser segura, ficam para o
 Plano 3, que é o primeiro a precisar de notificação de mudança ao vivo para aplicar estilo
 incrementalmente.
+
+**Nota (Task 4, pós-mortem do crash):** um `Windows.UI.Composition.*` reportado à assinatura
+permanente nunca é resolvido (nunca passa por `GetIInspectableFromHandle`) — é um visual de
+DirectComposition, não um elemento XAML, e resolver seu handle é o que derruba o processo
+(§6.2, `vendor:10904-10914`). Seus handles ainda entram na fila de liberação como qualquer
+outro `Add`; só a resolução é pulada.
 
 ### 7.3 Log
 
