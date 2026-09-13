@@ -57,10 +57,15 @@ public:
 
     IXamlDiagnostics* diagnostics() const { return diagnostics_; }
 
+    // Whether this session has IXamlDiagnosticsTestHooks. Check this before
+    // calling ReleaseElementHandle so its HRESULT can be the vtable's own
+    // unmolested return value - S_FALSE is a real (if unlikely) thing
+    // UnregisterInstance itself could return, so it cannot double as a
+    // "no hooks" sentinel without the counter it feeds under-reporting.
+    bool has_hooks() const { return hooks_ != nullptr; }
+
     // Releases one handle via IXamlDiagnosticsTestHooks::UnregisterInstance.
-    // Returns S_FALSE without calling anything if this session has no hooks
-    // (warned about once already, in OpenDiagnostics); otherwise returns
-    // UnregisterInstance's own HRESULT.
+    // Only call when has_hooks() is true.
     HRESULT ReleaseElementHandle(InstanceHandle handle) const;
 
 private:

@@ -3,7 +3,6 @@
 
 #include <atomic>
 #include <memory>
-#include <new>
 
 #include <tap/log.h>
 
@@ -38,9 +37,6 @@ DiagnosticsSession::~DiagnosticsSession() {
 }
 
 HRESULT DiagnosticsSession::ReleaseElementHandle(InstanceHandle handle) const {
-    if (!hooks_) {
-        return S_FALSE;  // No hooks on this session; nothing to call.
-    }
     return hooks_->UnregisterInstance(handle);
 }
 
@@ -56,7 +52,19 @@ namespace {
 // tap_boundary.cpp/site.h for the same reasoning). This is what closed the
 // heap use-after-free a plain std::atomic<DiagnosticsSession*> had: that
 // scheme synchronized the pointer's value, not the pointee's lifetime.
-std::atomic<std::shared_ptr<DiagnosticsSession>> g_session{nullptr};
+//
+// Intentionally leaked: never destroyed. std::atomic<shared_ptr<T>> is not
+// trivially destructible, so a namespace-scope instance would register a
+// destructor that runs at DLL_PROCESS_DETACH - calling COM Release() on
+// XAML objects under the loader lock during shell teardown, on a graceful
+// explorer exit (logoff, shutdown, "Exit Explorer"). That is the classic
+// shutdown-hang/AV shape. This module never tears down by design (see
+// DllCanUnloadNow returning S_FALSE, tap_boundary.cpp) - leaking one
+// session at process exit is the cheaper and safer half of that trade, and
+// is exactly what the old plain-pointer version did too (it was trivially
+// destructible, so nothing ran at exit and the session simply leaked).
+auto* const g_session =
+    new std::atomic<std::shared_ptr<DiagnosticsSession>>{nullptr};
 
 // Handles successfully released so far this process. Monotonic by
 // construction: only ReleaseHandle's success path touches it, and only ever
@@ -70,16 +78,13 @@ void ReleaseHandle(InstanceHandle handle) {
         return;  // A root element's parent handle is 0; nothing to release.
     }
 
-    std::shared_ptr<DiagnosticsSession> session = g_session.load();
-    if (!session) {
-        return;  // No session open.
+    std::shared_ptr<DiagnosticsSession> session = g_session->load();
+    if (!session || !session->has_hooks()) {
+        return;  // No session open, or hooks unavailable - warned once
+                 // already, in OpenDiagnostics.
     }
 
     HRESULT hr = session->ReleaseElementHandle(handle);
-    if (hr == S_FALSE) {
-        return;  // Hooks unavailable on this session - warned once already,
-                 // in OpenDiagnostics.
-    }
     if (SUCCEEDED(hr)) {
         g_released_handles.fetch_add(1, std::memory_order_relaxed);
     } else {
@@ -94,7 +99,7 @@ long ReleasedHandleCount() {
 }
 
 std::shared_ptr<DiagnosticsSession> AcquireSession() {
-    return g_session.load();
+    return g_session->load();
 }
 
 HRESULT OpenDiagnostics(IUnknown* site) {
@@ -125,7 +130,10 @@ HRESULT OpenDiagnostics(IUnknown* site) {
     std::shared_ptr<DiagnosticsSession> session;
     try {
         session = std::make_shared<DiagnosticsSession>(diagnostics, hooks);
-    } catch (const std::bad_alloc&) {
+    } catch (...) {
+        // Not just std::bad_alloc: anything escaping make_shared must still
+        // release what was already QI'd, or it leaks both interfaces into a
+        // process that never restarts. Fail closed.
         if (hooks) {
             hooks->Release();
         }
@@ -138,7 +146,7 @@ HRESULT OpenDiagnostics(IUnknown* site) {
     // gets overwritten without ever being closed. Whichever caller's
     // exchange runs second gets the other's session back as `previous` and
     // releases it below - exactly once, however many opens race.
-    std::shared_ptr<DiagnosticsSession> previous = g_session.exchange(session);
+    std::shared_ptr<DiagnosticsSession> previous = g_session->exchange(session);
     if (previous) {
         STYLER_LOG(LogLevel::Info,
                    L"OpenDiagnostics called with a session already open; "
@@ -154,7 +162,7 @@ HRESULT OpenDiagnostics(IUnknown* site) {
 }
 
 void CloseDiagnostics() {
-    std::shared_ptr<DiagnosticsSession> session = g_session.exchange(nullptr);
+    std::shared_ptr<DiagnosticsSession> session = g_session->exchange(nullptr);
     if (!session) {
         return;
     }
