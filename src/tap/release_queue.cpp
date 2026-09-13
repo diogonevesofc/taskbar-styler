@@ -22,7 +22,6 @@ thread_local ULONGLONG t_last_queue_tick = 0;
 thread_local bool t_drain_armed = false;
 thread_local bool t_no_dispatcher_logged = false;
 thread_local winrt::Windows::System::DispatcherQueueTimer t_timer{nullptr};
-thread_local winrt::event_token t_tick_token{};
 
 }  // namespace
 
@@ -38,13 +37,12 @@ void FlushReleasesNow() {
     t_drain_armed = false;
     std::vector<unsigned long long> pending = std::move(t_pending);
     t_pending.clear();
-    const size_t pending_count = pending.size();
 
-    std::vector<unsigned long long> to_release =
+    ReleaseResult result =
         HandlesToRelease(std::move(pending), [](unsigned long long h) {
             return ElementHasState(FindElementId(h));
         });
-    for (unsigned long long h : to_release) {
+    for (unsigned long long h : result.to_release) {
         ReleaseHandle(h);
         ForgetElementIdIfDead(h);
     }
@@ -52,10 +50,17 @@ void FlushReleasesNow() {
     // here, outside any walk.
     ReapDeadElementIdsIfNeeded();
     // "held" is the live-handle gauge spec section 7.2 asks for: handles we
-    // deliberately keep because their element carries state. It must not
-    // grow while the taskbar sits still - docs/smoke-test.md reads it.
+    // deliberately keep because their element carries state. Found in
+    // review: this used to be pending.size() - to_release.size(), the RAW
+    // (undeduped) queue length minus the released count, which counted
+    // duplicate parent handles (one push per child sharing a parent) as
+    // "held" - a lot of them, whenever a burst has many siblings, for zero
+    // real reason. unique_count is deduped and drops the zero sentinel
+    // (release_policy.h), so this is 0 whenever ElementHasState never
+    // returns true, on any input - it must not grow while the taskbar sits
+    // still, and it does not, now.
     STYLER_LOG(LogLevel::Info, L"drained %zu handles, %zu held (%ld released so far)",
-               to_release.size(), pending_count - to_release.size(),
+               result.to_release.size(), result.unique_count - result.to_release.size(),
                ReleasedHandleCount());
 }
 
@@ -81,7 +86,11 @@ void FlushReleasesIfQuiet() {
             t_timer = queue.CreateTimer();
             t_timer.IsRepeating(false);
             t_timer.Interval(std::chrono::milliseconds{kDrainDelayMs});
-            t_tick_token = t_timer.Tick(
+            // The returned event_token would only matter if we ever needed
+            // to unsubscribe this handler and keep the timer - we never do
+            // either (the timer is thread_local and outlives the thread),
+            // so it is discarded rather than kept unread.
+            t_timer.Tick(
                 [](winrt::Windows::System::DispatcherQueueTimer const&,
                    wf::IInspectable const&) {
                     try {

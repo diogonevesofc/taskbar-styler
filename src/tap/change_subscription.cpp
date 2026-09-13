@@ -134,9 +134,30 @@ private:
     std::shared_ptr<DiagnosticsSession> session_;
 };
 
+// See change_subscription.h for the full protocol these three values and
+// the two compare_exchange_strong call sites (one on Subscription::state
+// below, one on g_subscription in StartSubscription's failure path and in
+// StopSubscription) implement together.
+constexpr int kAdvising = 0;
+constexpr int kAdvised = 1;
+constexpr int kStopped = 2;
+
 struct Subscription {
     StandingCallback* callback = nullptr;  // Our reference.
     IVisualTreeService3* service = nullptr;
+    std::atomic<int> state{kAdvising};
+};
+
+// What the advise thread actually owns. Deliberately separate from
+// Subscription: the thread's own AddRef'd callback/service let it call
+// Advise/Unadvise and log without ever dereferencing the shared
+// Subscription's pointers while a concurrent StopSubscription could be
+// racing to free them - see change_subscription.h. `sub` is carried only as
+// an identity for the protocol's compare_exchange_strong calls.
+struct AdviseJob {
+    StandingCallback* callback;
+    IVisualTreeService3* service;
+    Subscription* sub;
 };
 
 // Heap-leaked for the same reason as g_session: no namespace-scope
@@ -204,44 +225,102 @@ HRESULT StartSubscription() {
     // vendor:11013-11030: calling Advise from this thread hangs in
     // Advising::RunOnUIThread "sometimes" - measured here too
     // (spike-standing-crash.md E3-E5). Run it on a new thread instead, and
-    // do not wait for it: the initial flood still arrives synchronously
-    // inside Advise, just on that thread.
-    sub->callback->AddRef();  // The thread's reference; released when it ends.
+    // do not wait for it - see the header comment for the ownership
+    // protocol this implements and why it is needed.
+    auto* job = new (std::nothrow) AdviseJob{};
+    if (!job) {
+        Subscription* expected_sub = sub;
+        g_subscription->compare_exchange_strong(expected_sub, nullptr);
+        sub->callback->Release();
+        service->Release();
+        delete sub;
+        return E_OUTOFMEMORY;
+    }
+    job->callback = sub->callback;
+    job->callback->AddRef();  // The job's own reference.
+    job->service = sub->service;
+    job->service->AddRef();  // The job's own reference.
+    job->sub = sub;
+
     HANDLE thread = CreateThread(
         nullptr, 0,
         [](LPVOID param) -> DWORD {
-            auto* s = static_cast<Subscription*>(param);
-            HRESULT advise_hr = s->service->AdviseVisualTreeChange(s->callback);
+            // Deliberately no CoInitializeEx here: mirrors upstream
+            // (vendor:11017-11030), measured working without it.
+            auto* job = static_cast<AdviseJob*>(param);
+            HRESULT advise_hr =
+                job->service->AdviseVisualTreeChange(job->callback);
             if (FAILED(advise_hr)) {
                 STYLER_LOG(LogLevel::Error,
                            L"AdviseVisualTreeChange failed 0x%08X",
                            static_cast<unsigned>(advise_hr));
-                g_subscription->store(nullptr);
-                // Advise can register, walk, and then fail: unadvise
-                // regardless and keep the callback alive if that fails too
-                // (same stance as ReleaseOnExit in tree_export.cpp).
-                if (SUCCEEDED(
-                        s->service->UnadviseVisualTreeChange(s->callback))) {
-                    s->callback->Release();  // Ours.
+                // Never a plain store - see the header comment.
+                Subscription* expected_sub = job->sub;
+                g_subscription->compare_exchange_strong(expected_sub, nullptr);
+                // A Subscription that never successfully advised has nothing
+                // for a later StopSubscription to find: always tear it down
+                // here, regardless of whether that CAS above found (and thus
+                // detached) it or a concurrent Stop already had.
+                if (SUCCEEDED(job->sub->service->UnadviseVisualTreeChange(
+                        job->sub->callback))) {
+                    job->sub->callback->Release();  // Subscription's own ref.
                 }
-                s->service->Release();
-                s->callback->Release();  // The thread's reference.
-                delete s;
+                job->sub->service->Release();
+                delete job->sub;
+                job->callback->Release();  // The job's own ref.
+                job->service->Release();
+                delete job;
                 return 0;
             }
-            STYLER_LOG(LogLevel::Info, L"subscription started on thread %lu",
+
+            int expected_state = kAdvising;
+            if (job->sub->state.compare_exchange_strong(expected_state,
+                                                          kAdvised)) {
+                // Live: a later StopSubscription will find kAdvised and tear
+                // this down normally. Nothing left to do but release the
+                // job's own references - the Subscription's stay held.
+                STYLER_LOG(LogLevel::Info,
+                           L"subscription started on thread %lu",
+                           GetCurrentThreadId());
+                job->callback->Release();
+                job->service->Release();
+                delete job;
+                return 0;
+            }
+            // The CAS lost: state already read Stopped, meaning
+            // StopSubscription ran while we were still inside Advise, found
+            // kAdvising, and - per its own half of the protocol - left the
+            // Subscription entirely alone for us to tear down now.
+            STYLER_LOG(LogLevel::Info,
+                       L"subscription started on thread %lu then stopped "
+                       L"(StopSubscription raced the advise)",
                        GetCurrentThreadId());
-            s->callback->Release();  // The thread's reference only - ours
-                                      // stays live until StopSubscription.
+            if (SUCCEEDED(job->sub->service->UnadviseVisualTreeChange(
+                    job->sub->callback))) {
+                job->sub->callback->Release();
+                STYLER_LOG(LogLevel::Info, L"subscription stopped");
+            } else {
+                STYLER_LOG(LogLevel::Error,
+                           L"UnadviseVisualTreeChange failed - leaking the "
+                           L"callback");
+            }
+            job->sub->service->Release();
+            delete job->sub;
+            job->callback->Release();
+            job->service->Release();
+            delete job;
             return 0;
         },
-        sub, 0, nullptr);
+        job, 0, nullptr);
     if (!thread) {
         DWORD err = GetLastError();
         STYLER_LOG(LogLevel::Error, L"CreateThread for Advise failed %lu", err);
-        g_subscription->store(nullptr);
-        sub->callback->Release();  // The thread's reference, never started.
-        sub->callback->Release();  // Ours.
+        Subscription* expected_sub = sub;
+        g_subscription->compare_exchange_strong(expected_sub, nullptr);
+        job->callback->Release();
+        job->service->Release();
+        delete job;
+        sub->callback->Release();
         service->Release();
         delete sub;
         return HRESULT_FROM_WIN32(err);
@@ -252,10 +331,29 @@ HRESULT StartSubscription() {
 }
 
 void StopSubscription() {
+    // Detach first so nothing else can reach this Subscription - including a
+    // concurrent second StopSubscription, which will find nullptr here and
+    // no-op below.
     Subscription* sub = g_subscription->exchange(nullptr);
     if (!sub) {
         return;
     }
+
+    int expected_state = kAdvising;
+    if (sub->state.compare_exchange_strong(expected_state, kStopped)) {
+        // The advise thread is still inside AdviseVisualTreeChange, which
+        // marshals its walk onto the UI thread - the same thread this
+        // function runs on, from SetSite, so waiting for that thread here
+        // would deadlock. Leave the Subscription untouched; the thread will
+        // see kStopped once Advise returns and tear it down itself (see the
+        // header comment's protocol).
+        STYLER_LOG(LogLevel::Info,
+                   L"subscription stop deferred - advise still in flight");
+        return;
+    }
+
+    // expected_state came back Advised: Advise already completed and the
+    // thread is done touching this Subscription. Tear it down, as always.
     HRESULT hr = sub->service->UnadviseVisualTreeChange(sub->callback);
     if (SUCCEEDED(hr)) {
         sub->callback->Release();

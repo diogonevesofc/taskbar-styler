@@ -26,13 +26,23 @@ ElementId GetOrCreateElementId(InstanceHandle handle,
     if (!handle || !element) {
         return ElementId::None;
     }
-    // spike-standing-crash E4: no reference into t_ids may be held across a
-    // WinRT call. make_weak re-enters XAML, which can report another
-    // mutation on this thread; that report can insert into or erase from
-    // t_ids and rehash it, leaving a held Entry& dangling (upstream has the
-    // same Entry&-across-make_weak shape, vendor:11853 - a shared latent
-    // defect, not something specific to us). Look up, call make_weak with
-    // nothing borrowed from the map, then write the result back.
+    // spike-standing-crash E4: no reference into t_ids may be held across
+    // make_weak specifically. It queries the object for IWeakReferenceSource
+    // and creates a new weak reference, which can re-enter XAML; that
+    // reentrant call can report another mutation on this thread, which can
+    // insert into or erase from t_ids and rehash it, leaving a held Entry&
+    // dangling (upstream has the same Entry&-across-make_weak shape,
+    // vendor:11853 - a shared latent defect, not something specific to us).
+    // Look up, call make_weak with nothing borrowed from the map, then write
+    // the result back.
+    //
+    // This is narrower than "no reference across any WinRT call": resolving
+    // an EXISTING weak_ref via .get() (below, and in ForgetElementIdIfDead
+    // and ReapDeadElementIdsIfNeeded) is a different, lighter operation - an
+    // interlocked refcount-promotion attempt with no call into the object or
+    // XAML - so it cannot report a mutation and cannot mutate the map.
+    // Holding an iterator or a const reference across it is fine, and those
+    // three sites do.
     {
         auto it = t_ids.find(handle);
         if (it != t_ids.end() && it->second.id != ElementId::None &&
