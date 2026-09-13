@@ -1,10 +1,19 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // EVERY function here is callable by the XAML diagnostics layer from inside
-// explorer.exe. An escaping exception kills the user's desktop, so each one is
-// a catch-all that never propagates and returns S_OK even on failure -
-// returning an error makes XAML stop sending events (upstream mirrors this,
-// vendor/upstream/windows-11-taskbar-styler.wh.cpp:10604).
+// explorer.exe. An escaping exception kills the user's desktop, so every one
+// of them is a catch-all that never lets an exception propagate.
+//
+// That is NOT the same as "always returns S_OK". Only the XAML event
+// callbacks (OnVisualTreeChange, OnElementStateChanged - added in later
+// tasks) and SetSite additionally never return a failure HRESULT: an error
+// from an event callback makes XAML stop sending events, and an error from
+// SetSite aborts activation entirely (upstream mirrors this,
+// vendor/upstream/windows-11-taskbar-styler.wh.cpp:10604). Everything else
+// here - GetSite, QueryInterface, CreateInstance, DllGetClassObject - returns
+// a real HRESULT, because the caller uses it to decide what to do (e.g.
+// GetSite returns E_FAIL when there is no site: S_OK there would claim
+// *ppv is valid when it is not, which breaks the IObjectWithSite contract).
 //
 // Nothing else belongs in this file. "Is the boundary protected?" must be a
 // question answered by opening one file.
@@ -13,16 +22,23 @@
 #include <inspectable.h>
 #include <ocidl.h>
 
+#include <atomic>
 #include <new>
 
 #include <tap/clsid.h>
 #include <tap/log.h>
+#include <tap/site.h>
 
 namespace styler::tap {
 
-IUnknown* g_site = nullptr;
-
 namespace {
+
+// Written only by SetSite below, guarded by the AddRef/Release pairing COM
+// requires. Read it only through SiteOrNull() (site.h) - never reach for
+// this variable directly from another translation unit or thread; the TAP
+// is called from several explorer UI threads, hence std::atomic rather than
+// a plain pointer.
+std::atomic<IUnknown*> g_site{nullptr};
 
 class TaskbarStylerTap : public IObjectWithSite {
 public:
@@ -55,16 +71,20 @@ public:
         try {
             STYLER_LOG(LogLevel::Info, L"SetSite(%p)", site);
 
-            if (g_site) {
-                g_site->Release();
-                g_site = nullptr;
+            // Note: upstream calls FreeLibrary(GetCurrentModuleHandle()) here
+            // to rebalance a reference InitializeXamlDiagnosticsEx added. We
+            // deliberately do not: DllCanUnloadNow always returns S_FALSE, so
+            // this module never unloads anyway, and the extra pin is
+            // redundant rather than additive.
+            if (IUnknown* previous = g_site.exchange(nullptr)) {
+                previous->Release();
             }
             if (!site) {
                 return S_OK;
             }
 
             site->AddRef();
-            g_site = site;
+            g_site.store(site, std::memory_order_release);
 
             wchar_t host[MAX_PATH]{};
             GetModuleFileNameW(nullptr, host, MAX_PATH);
@@ -77,13 +97,14 @@ public:
 
     HRESULT STDMETHODCALLTYPE GetSite(REFIID riid, void** ppv) override {
         try {
-            if (!g_site) {
+            IUnknown* site = g_site.load(std::memory_order_acquire);
+            if (!site) {
                 if (ppv) {
                     *ppv = nullptr;
                 }
                 return E_FAIL;
             }
-            return g_site->QueryInterface(riid, ppv);
+            return site->QueryInterface(riid, ppv);
         } catch (...) {
             STYLER_LOG(LogLevel::Error, L"GetSite threw");
             return E_FAIL;
@@ -147,6 +168,11 @@ private:
 };
 
 }  // namespace
+
+IUnknown* SiteOrNull() {
+    return g_site.load(std::memory_order_acquire);
+}
+
 }  // namespace styler::tap
 
 STDAPI DllGetClassObject(REFCLSID rclsid, REFIID riid, void** ppv) {

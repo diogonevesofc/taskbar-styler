@@ -269,9 +269,19 @@ do usuário. Um app que tenta injetar em loop infinito é indistinguível de um 
 ### 7.1 Regra zero: não derrubar o explorer
 
 Exceção não tratada no TAP mata o `explorer.exe`. Toda função chamável pelo XAML —
-`SetSite`, `GetSite`, `OnVisualTreeChange`, `OnElementStateChanged`, `DllGetClassObject` — é
-catch-all que nunca propaga e retorna `S_OK` mesmo em erro (devolver erro faz o XAML parar de
-enviar eventos).
+`SetSite`, `GetSite`, `OnVisualTreeChange`, `OnElementStateChanged`, `DllGetClassObject`,
+`DllCanUnloadNow`, `QueryInterface`, `AddRef`/`Release`, `CreateInstance`, `LockServer` — é
+catch-all que nunca deixa uma exceção escapar.
+
+Isso não significa que toda função sempre retorna `S_OK`. A regra de "nunca devolver erro"
+vale só para os **callbacks de evento** do XAML (`OnVisualTreeChange`,
+`OnElementStateChanged`) e para `SetSite`: devolver erro aí faz o XAML parar de enviar
+eventos, ou aborta a ativação inteira. Para as demais — `GetSite`, `QueryInterface`,
+`CreateInstance`, `DllGetClassObject` — o `HRESULT` é uma resposta real que o chamador
+usa para decidir o que fazer (por exemplo, `GetSite` sem site retorna `E_FAIL`, porque
+`S_OK` significa "`*ppv` é válido"; devolver `S_OK` com um ponteiro nulo mentiria para
+quem chamou e viola o contrato COM padrão de `IObjectWithSite`). Forçar `S_OK` nesses casos
+esconderia erros sem nenhum benefício, já que eles não são o gatilho que faz o XAML calar.
 
 Essas funções ficam todas em `src/tap/tap_boundary.cpp`, para que "a fronteira está
 protegida?" se responda abrindo um arquivo.
