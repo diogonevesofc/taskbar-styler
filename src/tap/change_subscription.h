@@ -47,7 +47,8 @@ namespace styler::tap {
 //   it runs on the already-initialized UI thread, never on the brand-new,
 //   uninitialized advise thread.
 //
-// Subscription lifetime protocol (fixes a use-after-free found in review):
+// Subscription lifetime protocol (fixes a use-after-free found in review,
+// twice - the first pass left the two failure paths below unarbitrated):
 // the advise thread can still be inside AdviseVisualTreeChange when a
 // concurrent SetSite calls StopSubscription - e.g. a second `load` without
 // restarting Explorer reached Stop about 385 ms into the first Advise in one
@@ -56,50 +57,83 @@ namespace styler::tap {
 // onto the UI thread Stop itself runs on, from SetSite - waiting there is a
 // deadlock), so both sides can be trying to tear down the same Subscription
 // at once. Ownership is arbitrated by one std::atomic<int> `state` on
-// Subscription (Advising / Advised / Stopped), one compare_exchange_strong
-// per side, from Advising:
+// Subscription (Advising / Advised / Stopped). Every path that can end a
+// Subscription's life - the advise thread on success, the advise thread on
+// failure, StartSubscription when CreateThread itself fails, and
+// StopSubscription - goes through the same two-step arbitration before it
+// may delete anything: first find out (via g_subscription) whether a Stop
+// has already taken this Subscription out of circulation, and if so, race
+// the `state` CAS below instead of assuming either side's outcome:
 //
-//   - The advise thread, once AdviseVisualTreeChange returns successfully,
-//     CASes Advising -> Advised. Success: the subscription is now live and
-//     untouched by the thread from here on; a later StopSubscription finds
-//     Advised and tears it down exactly as it always has. Failure (the
-//     state already reads Stopped): a concurrent Stop got there first and,
-//     per its own rule below, left the Subscription alone - the thread
-//     itself now does the Unadvise-or-leak, releases both its own and the
-//     Subscription's references, and deletes it.
-//   - If AdviseVisualTreeChange itself fails, the thread CASes g_subscription
-//     from the Subscription it was given to nullptr - never a plain store,
+//   - The advise thread, once AdviseVisualTreeChange returns - whether it
+//     succeeded or failed - CASes Advising -> Advised (Advised here means
+//     "the attempt is over, tear down through the normal path", not
+//     literally "still advised"; StopSubscription only needs to know
+//     whether it, or the advise side, ended up responsible). Success: a
+//     later (or already-waiting) StopSubscription finds Advised and tears
+//     the Subscription down - calling Unadvise regardless of whether Advise
+//     itself succeeded is safe, matching tree_export.cpp's own
+//     "unadvise can register, walk, and then fail" stance. Failure (state
+//     already reads Stopped): a concurrent Stop got there first, found
+//     Advising, and - per its own rule below - left the Subscription alone;
+//     the thread itself now does the Unadvise-or-leak and deletes it.
+//   - If AdviseVisualTreeChange itself fails, or CreateThread never manages
+//     to start the advise thread at all, whoever is holding the Subscription
+//     first CASes g_subscription from it to nullptr - never a plain store,
 //     which could blank a *newer* subscription a concurrent Stop-then-Start
-//     already raised - and always tears the Subscription down itself: one
-//     that never successfully advised has nothing for a later Stop to find,
-//     regardless of whether a concurrent Stop ran (it would have found
-//     Advising and, again, done nothing else).
+//     already raised. If that CAS succeeds, no Stop ever saw this
+//     Subscription (g_subscription still pointed at it): full ownership,
+//     tear it down directly. If it fails, a StopSubscription already
+//     exchanged it out and is committed to reading its `state` - deleting it
+//     here regardless, as the first version of this fix did, races that
+//     read. Instead, run the exact same Advising -> Advised race the success
+//     path runs: win, and the Stop holding the Subscription will find
+//     Advised and do the teardown itself (only the job's own two references
+//     are released here); lose (state already Stopped), and Stop already
+//     left it alone for us - tear it down ourselves, the same as the
+//     no-Stop-ever-saw-it case.
 //   - StopSubscription first exchanges g_subscription for nullptr (detaching
 //     it so nothing else can reach it - a concurrent second Stop finds
 //     nullptr and no-ops), then CASes Advising -> Stopped on what it found.
-//     Success: the advise thread is still inside Advise; Stop does nothing
-//     else - no Unadvise, no Release, no delete - and returns. Failure (the
-//     state already reads Advised): Advise already completed and the thread
-//     is done touching this Subscription; Stop does the Unadvise-or-leak and
-//     releases it, as it always has.
+//     Success: the advise attempt is still unresolved (in flight, or racing
+//     the CAS above); Stop does nothing else - no Unadvise, no Release, no
+//     delete - and returns StopResult::Deferred: the Subscription is still
+//     live and will keep reporting until whichever side loses the race
+//     above tears it down. Callers must not treat Deferred as "stopped" -
+//     see StopSubscription's own comment. Failure (state already reads
+//     Advised): the advise side is done with this Subscription; Stop does
+//     the Unadvise-or-leak, releases it, deletes it, and returns
+//     StopResult::Stopped.
 //
-// The advise thread never dereferences the shared Subscription's callback or
-// service pointers while the outcome is still undecided - a concurrent
-// StopSubscription racing the CAS above could free them under it. It works
-// instead through its own AdviseJob, holding its own AddRef'd copies of
-// both, independent of the Subscription's; the Subscription* it also carries
-// is used only as an identity for the CASes above until the protocol decides
-// which side owns the teardown - at that point, exactly one side is left
-// holding it, and only then does it dereference callback/service to Unadvise
-// and Release them.
+// Whichever side ends up owning the teardown never dereferences the shared
+// Subscription's callback or service pointers before that point - only
+// after the arbitration above has settled who owns it. Until then, the
+// advise thread works through its own AdviseJob, holding its own AddRef'd
+// copies of both, independent of the Subscription's; the Subscription* it
+// also carries is used only as an identity for the CASes above.
 //
 // Idempotent: a second Start with a live subscription is a no-op that
 // returns S_FALSE.
 HRESULT StartSubscription();
 
+// None: nothing was subscribed. Stopped: unadvised (or leaked, if Unadvise
+// itself failed) and torn down - a fresh StartSubscription is safe to call
+// immediately. Deferred: the advise thread was still inside
+// AdviseVisualTreeChange, so Stop left the old subscription running rather
+// than wait (waiting would deadlock - see StartSubscription's comment); the
+// old callback keeps reporting against the old session, which it holds
+// alive through its own shared_ptr, until it tears itself down once Advise
+// returns. Every caller must check for Deferred and skip whatever it was
+// about to do next that assumes the subscription is gone - today that is
+// SetSite not reopening the diagnostics session, and it will be true of
+// Task 7's reload path (Stop then Start again) the same way: starting a new
+// subscription while the old one is still deciding its own fate leaves two
+// advise threads targeting what may become the same session.
+enum class StopResult { None, Stopped, Deferred };
+
 // Unadvises. If Unadvise fails the callback object is leaked on purpose -
 // XAML may still call into it, and a freed vtable inside explorer is worse
 // than one small leak (same stance as ReleaseOnExit in tree_export.cpp).
-void StopSubscription();
+StopResult StopSubscription();
 
 }  // namespace styler::tap

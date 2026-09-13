@@ -164,6 +164,43 @@ struct AdviseJob {
 // destructor may run at DLL_PROCESS_DETACH (Plano 2, Ruling 11).
 auto* const g_subscription = new std::atomic<Subscription*>{nullptr};
 
+// Tears a Subscription down after an advise attempt that will never result
+// in a live subscription: either AdviseVisualTreeChange itself failed, or
+// the advise thread could not even be started. `detached_ourselves` is the
+// result of the caller's own g_subscription->compare_exchange_strong(sub,
+// nullptr), already done before calling this - see change_subscription.h
+// for why that must happen first and why this races `state` when it fails
+// instead of deleting `sub` unconditionally (review found: the first
+// version of this fix did exactly that, racing a StopSubscription already
+// committed to reading sub->state).
+void TearDownAfterFailedAdvise(Subscription* sub, bool detached_ourselves) {
+    if (!detached_ourselves) {
+        // A StopSubscription already exchanged `sub` out of g_subscription
+        // and is about to (or already did) read sub->state. Race the same
+        // Advising -> Advised transition the success path uses to signal
+        // "the attempt is over, tear down through the normal path" - do not
+        // just delete `sub` here, or that read is a use-after-free.
+        int expected_state = kAdvising;
+        if (sub->state.compare_exchange_strong(expected_state, kAdvised)) {
+            // Won: the Stop holding `sub` will find Advised at its own CAS
+            // and do the full teardown itself. Nothing left for us to touch.
+            return;
+        }
+        // Lost: state already read Stopped, so Stop already left `sub`
+        // alone for whoever loses this race - that is us now.
+    }
+    // Either we detached `sub` ourselves (no Stop ever saw it) or we just
+    // lost the race above (Stop left it for us): full ownership either way.
+    if (SUCCEEDED(sub->service->UnadviseVisualTreeChange(sub->callback))) {
+        sub->callback->Release();
+    } else {
+        STYLER_LOG(LogLevel::Error,
+                   L"UnadviseVisualTreeChange failed - leaking the callback");
+    }
+    sub->service->Release();
+    delete sub;
+}
+
 }  // namespace
 
 HRESULT StartSubscription() {
@@ -256,18 +293,10 @@ HRESULT StartSubscription() {
                            static_cast<unsigned>(advise_hr));
                 // Never a plain store - see the header comment.
                 Subscription* expected_sub = job->sub;
-                g_subscription->compare_exchange_strong(expected_sub, nullptr);
-                // A Subscription that never successfully advised has nothing
-                // for a later StopSubscription to find: always tear it down
-                // here, regardless of whether that CAS above found (and thus
-                // detached) it or a concurrent Stop already had.
-                if (SUCCEEDED(job->sub->service->UnadviseVisualTreeChange(
-                        job->sub->callback))) {
-                    job->sub->callback->Release();  // Subscription's own ref.
-                }
-                job->sub->service->Release();
-                delete job->sub;
-                job->callback->Release();  // The job's own ref.
+                bool detached =
+                    g_subscription->compare_exchange_strong(expected_sub, nullptr);
+                TearDownAfterFailedAdvise(job->sub, detached);
+                job->callback->Release();  // The job's own ref, always ours.
                 job->service->Release();
                 delete job;
                 return 0;
@@ -316,13 +345,11 @@ HRESULT StartSubscription() {
         DWORD err = GetLastError();
         STYLER_LOG(LogLevel::Error, L"CreateThread for Advise failed %lu", err);
         Subscription* expected_sub = sub;
-        g_subscription->compare_exchange_strong(expected_sub, nullptr);
+        bool detached = g_subscription->compare_exchange_strong(expected_sub, nullptr);
+        TearDownAfterFailedAdvise(sub, detached);
         job->callback->Release();
         job->service->Release();
         delete job;
-        sub->callback->Release();
-        service->Release();
-        delete sub;
         return HRESULT_FROM_WIN32(err);
     }
     CloseHandle(thread);
@@ -330,30 +357,31 @@ HRESULT StartSubscription() {
     return S_OK;
 }
 
-void StopSubscription() {
+StopResult StopSubscription() {
     // Detach first so nothing else can reach this Subscription - including a
     // concurrent second StopSubscription, which will find nullptr here and
     // no-op below.
     Subscription* sub = g_subscription->exchange(nullptr);
     if (!sub) {
-        return;
+        return StopResult::None;
     }
 
     int expected_state = kAdvising;
     if (sub->state.compare_exchange_strong(expected_state, kStopped)) {
-        // The advise thread is still inside AdviseVisualTreeChange, which
-        // marshals its walk onto the UI thread - the same thread this
-        // function runs on, from SetSite, so waiting for that thread here
-        // would deadlock. Leave the Subscription untouched; the thread will
-        // see kStopped once Advise returns and tear it down itself (see the
-        // header comment's protocol).
+        // The advise attempt is still unresolved - either a live
+        // AdviseVisualTreeChange call, which marshals its walk onto the UI
+        // thread this function itself runs on from SetSite (so waiting for
+        // it here would deadlock), or its failure handling racing this same
+        // CAS right now (TearDownAfterFailedAdvise). Leave the Subscription
+        // untouched either way; whichever side loses that race will see
+        // kStopped and tear it down (see the header comment's protocol).
         STYLER_LOG(LogLevel::Info,
                    L"subscription stop deferred - advise still in flight");
-        return;
+        return StopResult::Deferred;
     }
 
-    // expected_state came back Advised: Advise already completed and the
-    // thread is done touching this Subscription. Tear it down, as always.
+    // expected_state came back Advised: the advise side is done touching
+    // this Subscription. Tear it down, as always.
     HRESULT hr = sub->service->UnadviseVisualTreeChange(sub->callback);
     if (SUCCEEDED(hr)) {
         sub->callback->Release();
@@ -365,6 +393,7 @@ void StopSubscription() {
     }
     sub->service->Release();
     delete sub;
+    return StopResult::Stopped;
 }
 
 }  // namespace styler::tap

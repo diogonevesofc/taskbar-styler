@@ -130,7 +130,24 @@ public:
             // that session out from under it leaves g_subscription pointing
             // at a dead service/callback, and no new subscription can start
             // until Explorer restarts (measured: spike E8b, "second load").
-            StopSubscription();
+            // StopSubscription can also come back Deferred: the old advise
+            // thread was still inside AdviseVisualTreeChange, and was left
+            // alone rather than waited for (waiting here, on the UI thread
+            // Advise marshals its walk onto, would deadlock). Reopening the
+            // session now would orphan that still-live callback the same
+            // way an unconditional reopen would - so this load does nothing
+            // further: the old callback keeps reporting against the old
+            // session, which it holds alive through its own shared_ptr,
+            // until it tears itself down on its own. A later load can retry
+            // once that settles.
+            StopResult stop_result = StopSubscription();
+            if (stop_result == StopResult::Deferred) {
+                STYLER_LOG(LogLevel::Info,
+                           L"load ignored: previous subscription still "
+                           L"advising; the running one stays in place - "
+                           L"retry in a moment");
+                return S_OK;
+            }
 
             wchar_t host[MAX_PATH]{};
             GetModuleFileNameW(nullptr, host, MAX_PATH);
