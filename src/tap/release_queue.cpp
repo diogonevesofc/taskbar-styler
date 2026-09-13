@@ -1,0 +1,107 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#include <tap/release_queue.h>
+
+#include <chrono>
+#include <vector>
+
+#include <tap/element_registry.h>
+#include <tap/log.h>
+#include <tap/release_policy.h>
+#include <tap/style_engine.h>
+#include <tap/visual_tree_watcher.h>
+#include <tap/winrt_common.h>
+
+namespace styler::tap {
+namespace {
+
+constexpr ULONGLONG kQuietMs = 200;  // Long enough to sit out a tree build.
+constexpr unsigned kDrainDelayMs = 1;  // Only has to leave the report's frame.
+
+thread_local std::vector<unsigned long long> t_pending;
+thread_local ULONGLONG t_last_queue_tick = 0;
+thread_local bool t_drain_armed = false;
+thread_local bool t_no_dispatcher_logged = false;
+thread_local winrt::Windows::System::DispatcherQueueTimer t_timer{nullptr};
+thread_local winrt::event_token t_tick_token{};
+
+}  // namespace
+
+void QueueRelease(InstanceHandle handle) {
+    if (!handle) {
+        return;
+    }
+    t_pending.push_back(handle);
+    t_last_queue_tick = GetTickCount64();
+}
+
+void FlushReleasesNow() {
+    t_drain_armed = false;
+    std::vector<unsigned long long> pending = std::move(t_pending);
+    t_pending.clear();
+    const size_t pending_count = pending.size();
+
+    std::vector<unsigned long long> to_release =
+        HandlesToRelease(std::move(pending), [](unsigned long long h) {
+            return ElementHasState(FindElementId(h));
+        });
+    for (unsigned long long h : to_release) {
+        ReleaseHandle(h);
+        ForgetElementIdIfDead(h);
+    }
+    // Releases above are what let elements die unreported; sweep for those
+    // here, outside any walk.
+    ReapDeadElementIdsIfNeeded();
+    // "held" is the live-handle gauge spec section 7.2 asks for: handles we
+    // deliberately keep because their element carries state. It must not
+    // grow while the taskbar sits still - docs/smoke-test.md reads it.
+    STYLER_LOG(LogLevel::Info, L"drained %zu handles, %zu held (%ld released so far)",
+               to_release.size(), pending_count - to_release.size(),
+               ReleasedHandleCount());
+}
+
+void FlushReleasesIfQuiet() {
+    if (t_pending.empty() || t_drain_armed ||
+        GetTickCount64() - t_last_queue_tick < kQuietMs) {
+        return;
+    }
+    try {
+        if (!t_timer) {
+            auto queue = winrt::Windows::System::DispatcherQueue::GetForCurrentThread();
+            if (!queue) {
+                // Releasing from here is the one thing that isn't safe, so
+                // the elements stay held. Said once per thread.
+                if (!t_no_dispatcher_logged) {
+                    t_no_dispatcher_logged = true;
+                    STYLER_LOG(LogLevel::Error,
+                               L"no DispatcherQueue on thread %lu: %zu handles held",
+                               GetCurrentThreadId(), t_pending.size());
+                }
+                return;
+            }
+            t_timer = queue.CreateTimer();
+            t_timer.IsRepeating(false);
+            t_timer.Interval(std::chrono::milliseconds{kDrainDelayMs});
+            t_tick_token = t_timer.Tick(
+                [](winrt::Windows::System::DispatcherQueueTimer const&,
+                   wf::IInspectable const&) {
+                    try {
+                        FlushReleasesNow();
+                    } catch (winrt::hresult_error const& ex) {
+                        STYLER_LOG(LogLevel::Error, L"drain hresult 0x%08X",
+                                   static_cast<unsigned>(ex.code()));
+                    } catch (...) {
+                        STYLER_LOG(LogLevel::Error, L"drain threw");
+                    }
+                });
+        }
+        t_timer.Start();
+        t_drain_armed = true;
+    } catch (winrt::hresult_error const& ex) {
+        STYLER_LOG(LogLevel::Error, L"arming drain failed 0x%08X",
+                   static_cast<unsigned>(ex.code()));
+    } catch (...) {
+        STYLER_LOG(LogLevel::Error, L"arming drain threw");
+    }
+}
+
+}  // namespace styler::tap

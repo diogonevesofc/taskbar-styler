@@ -5,6 +5,7 @@
 add_library(taskbar_styler_tap_lib STATIC
   log.cpp
   tree_format.cpp
+  release_policy.cpp
 )
 target_include_directories(taskbar_styler_tap_lib PUBLIC ..)
 
@@ -16,6 +17,10 @@ add_library(taskbar_styler_tap MODULE
   thread_init.cpp
   visual_tree_watcher.cpp
   tree_export.cpp
+  element_registry.cpp
+  release_queue.cpp
+  change_subscription.cpp
+  style_engine.cpp
 )
 target_include_directories(taskbar_styler_tap PUBLIC ..)
 target_link_libraries(taskbar_styler_tap PRIVATE taskbar_styler_tap_lib)

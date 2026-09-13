@@ -26,6 +26,7 @@
 #include <new>
 #include <string>
 
+#include <tap/change_subscription.h>
 #include <tap/clsid.h>
 #include <tap/log.h>
 #include <tap/site.h>
@@ -114,6 +115,7 @@ public:
             }
             if (!site) {
                 StopHostWatch();
+                StopSubscription();
                 CloseDiagnostics();
                 return S_OK;
             }
@@ -153,6 +155,12 @@ public:
                            InitializationData().c_str());
                 if (auto session = AcquireSession()) {
                     ProbeWinRt(session);
+                }
+
+                HRESULT sub_hr = StartSubscription();
+                if (FAILED(sub_hr)) {
+                    STYLER_LOG(LogLevel::Error, L"StartSubscription failed 0x%08X",
+                               static_cast<unsigned>(sub_hr));
                 }
             }
         } catch (...) {
