@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include <string>
 #include <string_view>
 
 namespace styler::tap {
@@ -9,6 +10,13 @@ enum class LogLevel { Error = 0, Info = 1, Debug = 2 };
 
 void SetLogLevel(LogLevel level);
 LogLevel GetLogLevel();
+
+// The %LOCALAPPDATA%\TaskbarStyler directory, created if it does not exist
+// yet. Empty if LOCALAPPDATA is not set. Shared by LogPath (log.cpp) and
+// tap_boundary.cpp's visual-tree.txt export path, so there is exactly one
+// place that creates the directory rather than one call site relying on the
+// other having already run first.
+std::wstring StylerDataDir();
 
 // Called on the hot path: the visual tree snapshot (tree_export.cpp) walks
 // hundreds of elements per export. Must stay a plain integer comparison.

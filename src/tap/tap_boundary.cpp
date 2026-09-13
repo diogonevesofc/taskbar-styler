@@ -113,12 +113,15 @@ public:
                 }
                 StartHostWatch();
 
-                wchar_t local[MAX_PATH]{};
-                DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH);
-                if (n > 0 && n < MAX_PATH) {
-                    std::wstring out = std::wstring(local) +
-                                        L"\\TaskbarStyler\\visual-tree.txt";
-                    ExportTreeToFile(out);
+                std::wstring dir = StylerDataDir();
+                if (!dir.empty()) {
+                    HRESULT export_hr =
+                        ExportTreeToFile(dir + L"\\visual-tree.txt");
+                    if (FAILED(export_hr)) {
+                        STYLER_LOG(LogLevel::Error,
+                                   L"ExportTreeToFile failed 0x%08X",
+                                   static_cast<unsigned>(export_hr));
+                    }
                 }
             }
         } catch (...) {

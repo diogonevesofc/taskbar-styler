@@ -23,13 +23,10 @@ std::mutex g_file_mutex;
 constexpr long long kMaxLogBytes = 1024 * 1024;
 
 std::wstring LogPath() {
-    wchar_t base[MAX_PATH]{};
-    DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH);
-    if (n == 0 || n >= MAX_PATH) {
+    std::wstring dir = StylerDataDir();
+    if (dir.empty()) {
         return {};
     }
-    std::wstring dir = std::wstring(base) + L"\\TaskbarStyler";
-    CreateDirectoryW(dir.c_str(), nullptr);
     return dir + L"\\log.txt";
 }
 
@@ -64,6 +61,17 @@ void RotateIfLarge(const std::wstring& path) {
 }
 
 }  // namespace
+
+std::wstring StylerDataDir() {
+    wchar_t base[MAX_PATH]{};
+    DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) {
+        return {};
+    }
+    std::wstring dir = std::wstring(base) + L"\\TaskbarStyler";
+    CreateDirectoryW(dir.c_str(), nullptr);
+    return dir;
+}
 
 void SetLogLevel(LogLevel level) {
     g_level.store(level, std::memory_order_relaxed);
