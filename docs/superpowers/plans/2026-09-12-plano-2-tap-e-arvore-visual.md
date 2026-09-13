@@ -12,8 +12,9 @@ visual da taskbar e exportá-la no mesmo formato dos seletores dos temas.
 **Architecture:** O CLI chama `InitializeXamlDiagnosticsEx` apontando para o PID
 do explorer e para a nossa DLL; o Windows a carrega sozinho — sem injeção. Dentro
 do processo, a DLL implementa `IObjectWithSite`, recebe um `IXamlDiagnostics`,
-obtém `IVisualTreeService3` e se registra com `AdviseVisualTreeChange`. Nenhum
-byte de código é modificado em processo algum.
+obtém `IVisualTreeService3` e percorre a árvore sob demanda. Nenhum byte de
+código é modificado em processo algum. A assinatura de notificações de mudança
+(`AdviseVisualTreeChange`) fica para o Plano 3 — veja a Task 4.
 
 **Tech Stack:** C++20 (MSVC), COM registration-free, Windows SDK 10.0.26100.0,
 CMake + Ninja, doctest.
@@ -78,7 +79,7 @@ atualizar.
 | `src/tap/clsid.h` | O CLSID do TAP, compartilhado com o CLI |
 | `src/tap/log.h/.cpp` | Log com níveis, `OutputDebugStringW` + arquivo rotativo |
 | `src/tap/tap_boundary.cpp` | **Toda** entrada chamável pelo XAML, cada uma catch-all |
-| `src/tap/visual_tree_watcher.h/.cpp` | `IVisualTreeServiceCallback2`, bookkeeping de handles |
+| `src/tap/visual_tree_watcher.h/.cpp` | Sessão de diagnóstico, bookkeeping de handles |
 | `src/tap/tree_export.h/.cpp` | Travessia e formatação da árvore |
 | `src/tap/thread_init.h/.cpp` | Init por thread, enumeração de hosts, WinEvent hook |
 | `src/cli/CMakeLists.txt` | Alvo `taskbar_styler_cli` |
@@ -1987,8 +1988,8 @@ void StopHostWatch() {
 
 - [ ] **Step 3: Ligar no `SetSite`**
 
-Em `tap_boundary.cpp`, inclua `<tap/thread_init.h>`. Depois do `StartWatching` e
-antes da exportação, some:
+Em `tap_boundary.cpp`, inclua `<tap/thread_init.h>`. Depois do `OpenDiagnostics`
+e antes da exportação, some:
 
 ```cpp
             if (HWND ui = GetTaskbarUiWnd()) {
@@ -2008,7 +2009,7 @@ void WINAPI InitThunkPublic(void*) {
 }
 ```
 
-No ramo `if (!site)`, antes de `StopWatching()`, some `StopHostWatch();`.
+No ramo `if (!site)`, antes de `CloseDiagnostics()`, some `StopHostWatch();`.
 
 - [ ] **Step 4: `status` e `unload` no CLI**
 
