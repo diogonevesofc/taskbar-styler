@@ -1076,6 +1076,24 @@ ela exige, ficam para o Plano 3, que é o primeiro a precisar de notificação d
 mudança ao vivo para aplicar estilo incrementalmente conforme elementos
 aparecem.
 
+**Fix round 2** encontrou um Critical que sobreviveu ao round 1: a sessão vivia
+atrás de um `std::atomic<DiagnosticsSession*>` cru — a mesma ordenação de
+ponteiro do `g_site`, mas sem a garantia de que o objeto apontado continuasse
+vivo. `ReleaseHandle` carregava o ponteiro e depois desreferenciava
+`hooks()`; `CloseDiagnostics` fazia `exchange(nullptr)` seguido de `delete`
+imediato, sem esperar por quem já tivesse lido o ponteiro antes. Um
+`SetSite(nullptr)` numa thread do explorer concorrente com um `ReleaseHandle`
+noutra thread (exatamente o que a Task 5 vai fazer, de uma travessia que não
+precisa rodar na thread do `SetSite`) lia memória já liberada e chamava uma
+vtable COM já liberada dentro do `explorer.exe`. A correção adotada foi trocar
+o ponteiro cru por `std::atomic<std::shared_ptr<DiagnosticsSession>>`: um
+`load()` já é uma referência forte, então o objeto não pode morrer enquanto
+essa referência estiver viva, mesmo que outra thread feche a sessão ao mesmo
+tempo. `Diagnostics()` foi removida — não existe forma seguro de devolver um
+ponteiro cru através do retorno de uma função e proteger o que ele aponta só
+com um comentário — e substituída por `AcquireSession()`, que devolve a
+referência forte em si.
+
 **Files:**
 - Create: `src/tap/visual_tree_watcher.h`, `src/tap/visual_tree_watcher.cpp`
 - Modify: `src/tap/tap_boundary.cpp`, `src/tap/CMakeLists.txt`
@@ -1085,16 +1103,25 @@ aparecem.
 - Produces:
   - `HRESULT styler::tap::OpenDiagnostics(IUnknown* site)`
   - `void styler::tap::CloseDiagnostics()`
+  - `std::shared_ptr<styler::tap::DiagnosticsSession> styler::tap::AcquireSession()`
+    — usado pela Task 5. Uma revisão de código (fix round 2) rejeitou um
+    `IXamlDiagnostics*` cru + comentário "AddRef antes de usar": um ponteiro
+    cru devolvido por uma função não pode ser protegido por nada que viva só
+    dentro da chamada, e uma regra que mora só num comentário é uma regra que
+    dá para violar escrevendo o código óbvio. `AcquireSession()` devolve uma
+    referência forte (`shared_ptr`) que mantém a sessão — e o `IXamlDiagnostics`
+    dentro dela — viva enquanto o chamador a segurar, mesmo com um
+    `CloseDiagnostics` concorrente em outra thread. Vazio se nenhuma sessão
+    estiver aberta.
   - `void styler::tap::ReleaseHandle(InstanceHandle handle)` — usado pela
     Task 5 para liberar cada handle que sua travessia obtiver de
     `GetChildren`; no-op para `handle == 0` (o handle de pai de uma raiz).
-  - `long styler::tap::LiveHandleCount()` — conta quantos handles já foram
-    liberados com sucesso neste processo; monotônico (só cresce), para servir
-    de observável de vazamento (spec §7.2) — um contador que pode cair abaixo
-    de zero nunca conseguiria mostrar um vazamento parado.
-  - `IXamlDiagnostics* styler::tap::Diagnostics()` — usado pela Task 5; válido
-    somente entre um `OpenDiagnostics` bem-sucedido e o `CloseDiagnostics`
-    (ou `SetSite(nullptr)`) seguinte.
+  - `long styler::tap::ReleasedHandleCount()` — conta quantos handles já foram
+    liberados com sucesso neste processo; monotônico (só cresce). **Não é** o
+    contador de handles vivos do spec §7.2: esse contador não é implementado
+    no Plano 2 (ver nota no spec, §7.2) — a travessia sob demanda da Task 5
+    libera cada handle que toca dentro da própria travessia, então não sobra
+    nada vivo para contar depois que ela termina.
 
 - [ ] **Step 1: Conferir o GUID de `IXamlDiagnosticsTestHooks`**
 
@@ -1119,6 +1146,8 @@ elemento reportado vaza pela vida inteira do processo explorer.
 #include <inspectable.h>
 #include <xamlom.h>
 
+#include <memory>
+
 namespace styler::tap {
 
 // Holds the diagnostics session against a XAML host: the QI'd IXamlDiagnostics
@@ -1139,22 +1168,63 @@ namespace styler::tap {
 // the deferred-release drain it requires, is deferred to Plano 3, which is
 // the first plan that actually needs live change notifications.
 
+// Private and undocumented; obtained by QI with a hardcoded GUID inside
+// OpenDiagnostics. Only forward-declared here so DiagnosticsSession can hold
+// a pointer to one - fully defined in visual_tree_watcher.cpp, the only file
+// that needs its vtable shape.
+struct IXamlDiagnosticsTestHooks;
+
+// Owns one open session's IXamlDiagnostics and (when available)
+// IXamlDiagnosticsTestHooks; both are released exactly once, from the
+// destructor.
+//
+// Reached only through std::shared_ptr (see AcquireSession() below): a
+// thread holding one of these keeps the session - and the COM interfaces
+// inside it - alive for as long as it holds the pointer, even if another
+// thread calls CloseDiagnostics concurrently. A raw pointer handed back
+// across a function-return boundary cannot be protected this way: by the
+// time the caller can act on it (e.g. AddRef it), it may already be freed.
+// That is why there is deliberately no "borrow a raw IXamlDiagnostics*"
+// accessor at namespace scope - only AcquireSession(), which hands out a
+// strong reference up front.
+class DiagnosticsSession {
+public:
+    DiagnosticsSession(IXamlDiagnostics* diagnostics,
+                        IXamlDiagnosticsTestHooks* hooks);
+    ~DiagnosticsSession();
+
+    DiagnosticsSession(const DiagnosticsSession&) = delete;
+    DiagnosticsSession& operator=(const DiagnosticsSession&) = delete;
+
+    IXamlDiagnostics* diagnostics() const { return diagnostics_; }
+
+    // Releases one handle via IXamlDiagnosticsTestHooks::UnregisterInstance.
+    // Returns S_FALSE without calling anything if this session has no hooks
+    // (warned about once already, in OpenDiagnostics); otherwise returns
+    // UnregisterInstance's own HRESULT.
+    HRESULT ReleaseElementHandle(InstanceHandle handle) const;
+
+private:
+    IXamlDiagnostics* diagnostics_;
+    IXamlDiagnosticsTestHooks* hooks_;
+};
+
 // Opens the diagnostics session against `site`'s IXamlDiagnostics. If a
-// session is already open, it is closed first. Returns a real HRESULT; on
-// any failure no session is left open (Diagnostics() returns nullptr).
+// session is already open, it is replaced (the old one is closed once the
+// last reference to it - including any in-flight ReleaseHandle call - goes
+// away). Returns a real HRESULT; on any failure no session is left open
+// (AcquireSession() returns an empty pointer).
 HRESULT OpenDiagnostics(IUnknown* site);
 
-// Closes the session opened by OpenDiagnostics, if any. Safe to call when no
-// session is open.
+// Closes the currently open session, if any. Safe to call when no session is
+// open.
 void CloseDiagnostics();
 
-// The open session's IXamlDiagnostics, or nullptr if no session is open (no
-// OpenDiagnostics call yet, it failed, or CloseDiagnostics ran since). This
-// is a live, non-owning pointer: the caller does not Release it, and must not
-// cache it past a call that could race a concurrent CloseDiagnostics - AddRef
-// a private copy to hold it longer than one call (same rule as SiteOrNull(),
-// see site.h).
-IXamlDiagnostics* Diagnostics();
+// A strong reference to the open diagnostics session, or an empty pointer if
+// none is open. Holding the returned pointer keeps the session and its
+// IXamlDiagnostics alive for as long as you hold it, across a concurrent
+// CloseDiagnostics on another thread.
+std::shared_ptr<DiagnosticsSession> AcquireSession();
 
 // Releases one handle the diagnostics layer reported - e.g. a handle Task 5's
 // tree walk got back from IVisualTreeService3::GetChildren. Every handle the
@@ -1163,15 +1233,21 @@ IXamlDiagnostics* Diagnostics();
 // to call with handle == 0 (a root element's parent handle): that is not a
 // real handle, and the underlying vtable is private and undocumented, not
 // something to probe with a null handle. Also a safe no-op while no session
-// is open, or IXamlDiagnosticsTestHooks is unavailable (warned once, in
-// OpenDiagnostics).
+// is open, or IXamlDiagnosticsTestHooks is unavailable on it.
 void ReleaseHandle(InstanceHandle handle);
 
 // Count of handles successfully released so far this process, via
-// ReleaseHandle. Monotonic - it only increases - so it can serve as the leak
-// observable spec section 7.2 asks for: a counter that could drift negative
-// could never surface a stalled release path the way this one can.
-long LiveHandleCount();
+// ReleaseHandle. Monotonic - it only increases.
+//
+// This is NOT the spec section 7.2 "live handle count" gauge - that gauge is
+// not implemented in Plano 2. Plano 2's tree walk releases every handle it
+// touches within the same walk (see ReleaseHandle above), so there is
+// nothing left alive to count once a walk finishes; a released-count can
+// only confirm the release path is firing, not surface a handle nobody
+// released. The live gauge belongs to Plano 3, the first plan that holds
+// elements across time (via change notifications) instead of releasing them
+// immediately after use.
+long ReleasedHandleCount();
 
 }  // namespace styler::tap
 ```
@@ -1185,12 +1261,12 @@ Substitua o GUID placeholder abaixo pelo que você leu no Step 1.
 #include <tap/visual_tree_watcher.h>
 
 #include <atomic>
+#include <memory>
 #include <new>
 
 #include <tap/log.h>
 
 namespace styler::tap {
-namespace {
 
 // {735941A2-3EE3-495A-8DA9-972627003075}
 // Private and undocumented; read from the vendored upstream at line 10946.
@@ -1201,47 +1277,45 @@ constexpr GUID IID_IXamlDiagnosticsTestHooks = {
     0x495a,
     {0x8d, 0xa9, 0x97, 0x26, 0x27, 0x00, 0x30, 0x75}};
 
+// Full definition of the type forward-declared in visual_tree_watcher.h.
 struct IXamlDiagnosticsTestHooks : IUnknown {
     virtual HRESULT STDMETHODCALLTYPE UnregisterInstance(
         InstanceHandle handle) = 0;
 };
 
-// Owns one open session's IXamlDiagnostics and (when available)
-// IXamlDiagnosticsTestHooks. Both are released exactly once, from the
-// destructor, so teardown has a single gate instead of Release() calls
-// scattered across failure paths that one of them could skip.
-class DiagnosticsSession {
-public:
-    DiagnosticsSession(IXamlDiagnostics* diagnostics,
-                        IXamlDiagnosticsTestHooks* hooks)
-        : diagnostics_(diagnostics), hooks_(hooks) {}
+DiagnosticsSession::DiagnosticsSession(IXamlDiagnostics* diagnostics,
+                                        IXamlDiagnosticsTestHooks* hooks)
+    : diagnostics_(diagnostics), hooks_(hooks) {}
 
-    DiagnosticsSession(const DiagnosticsSession&) = delete;
-    DiagnosticsSession& operator=(const DiagnosticsSession&) = delete;
-
-    ~DiagnosticsSession() {
-        if (hooks_) {
-            hooks_->Release();
-        }
-        if (diagnostics_) {
-            diagnostics_->Release();
-        }
+DiagnosticsSession::~DiagnosticsSession() {
+    if (hooks_) {
+        hooks_->Release();
     }
+    if (diagnostics_) {
+        diagnostics_->Release();
+    }
+}
 
-    IXamlDiagnostics* diagnostics() const { return diagnostics_; }
-    IXamlDiagnosticsTestHooks* hooks() const { return hooks_; }
+HRESULT DiagnosticsSession::ReleaseElementHandle(InstanceHandle handle) const {
+    if (!hooks_) {
+        return S_FALSE;  // No hooks on this session; nothing to call.
+    }
+    return hooks_->UnregisterInstance(handle);
+}
 
-private:
-    IXamlDiagnostics* diagnostics_;
-    IXamlDiagnosticsTestHooks* hooks_;
-};
+namespace {
 
-// The current session, or nullptr. Written only by OpenDiagnostics/
-// CloseDiagnostics below; read through Diagnostics()/ReleaseHandle - never
-// reach for this directly from another translation unit. std::atomic because
-// the TAP is called from several explorer UI threads (same reasoning as
-// g_site in tap_boundary.cpp - see site.h).
-std::atomic<DiagnosticsSession*> g_session{nullptr};
+// The current session, or an empty pointer. Written only by
+// OpenDiagnostics/CloseDiagnostics below; read through
+// AcquireSession()/ReleaseHandle - never reach for this directly from
+// another translation unit. A load() here is itself a strong reference: the
+// session it points to cannot be destroyed while that reference is held,
+// even if another thread calls CloseDiagnostics concurrently (the TAP is
+// called from several explorer UI threads - see g_site in
+// tap_boundary.cpp/site.h for the same reasoning). This is what closed the
+// heap use-after-free a plain std::atomic<DiagnosticsSession*> had: that
+// scheme synchronized the pointer's value, not the pointee's lifetime.
+std::atomic<std::shared_ptr<DiagnosticsSession>> g_session{nullptr};
 
 // Handles successfully released so far this process. Monotonic by
 // construction: only ReleaseHandle's success path touches it, and only ever
@@ -1255,12 +1329,16 @@ void ReleaseHandle(InstanceHandle handle) {
         return;  // A root element's parent handle is 0; nothing to release.
     }
 
-    DiagnosticsSession* session = g_session.load(std::memory_order_acquire);
-    if (!session || !session->hooks()) {
-        return;  // No session open, or hooks unavailable - warned once above.
+    std::shared_ptr<DiagnosticsSession> session = g_session.load();
+    if (!session) {
+        return;  // No session open.
     }
 
-    HRESULT hr = session->hooks()->UnregisterInstance(handle);
+    HRESULT hr = session->ReleaseElementHandle(handle);
+    if (hr == S_FALSE) {
+        return;  // Hooks unavailable on this session - warned once already,
+                 // in OpenDiagnostics.
+    }
     if (SUCCEEDED(hr)) {
         g_released_handles.fetch_add(1, std::memory_order_relaxed);
     } else {
@@ -1270,25 +1348,17 @@ void ReleaseHandle(InstanceHandle handle) {
     }
 }
 
-long LiveHandleCount() {
+long ReleasedHandleCount() {
     return g_released_handles.load(std::memory_order_relaxed);
 }
 
-IXamlDiagnostics* Diagnostics() {
-    DiagnosticsSession* session = g_session.load(std::memory_order_acquire);
-    return session ? session->diagnostics() : nullptr;
+std::shared_ptr<DiagnosticsSession> AcquireSession() {
+    return g_session.load();
 }
 
 HRESULT OpenDiagnostics(IUnknown* site) {
     if (!site) {
         return E_INVALIDARG;
-    }
-
-    if (g_session.load(std::memory_order_acquire)) {
-        STYLER_LOG(LogLevel::Info,
-                   L"OpenDiagnostics called with a session already open; "
-                   L"closing and reopening");
-        CloseDiagnostics();
     }
 
     IXamlDiagnostics* diagnostics = nullptr;
@@ -1311,8 +1381,10 @@ HRESULT OpenDiagnostics(IUnknown* site) {
         hooks = nullptr;
     }
 
-    auto* session = new (std::nothrow) DiagnosticsSession(diagnostics, hooks);
-    if (!session) {
+    std::shared_ptr<DiagnosticsSession> session;
+    try {
+        session = std::make_shared<DiagnosticsSession>(diagnostics, hooks);
+    } catch (const std::bad_alloc&) {
         if (hooks) {
             hooks->Release();
         }
@@ -1320,18 +1392,35 @@ HRESULT OpenDiagnostics(IUnknown* site) {
         return E_OUTOFMEMORY;
     }
 
-    g_session.store(session, std::memory_order_release);
+    // exchange (not load-then-store) so two concurrent opens cannot each
+    // read "no session yet" and both install one, leaking whichever session
+    // gets overwritten without ever being closed. Whichever caller's
+    // exchange runs second gets the other's session back as `previous` and
+    // releases it below - exactly once, however many opens race.
+    std::shared_ptr<DiagnosticsSession> previous = g_session.exchange(session);
+    if (previous) {
+        STYLER_LOG(LogLevel::Info,
+                   L"OpenDiagnostics called with a session already open; "
+                   L"closing and reopening");
+    }
+    // `previous` goes out of scope here. If this was its last reference, its
+    // destructor (via DiagnosticsSession's) releases the old interfaces now;
+    // if a concurrent ReleaseHandle is still holding a reference to it, this
+    // merely drops our count and that call finishes safely on its own copy.
+
     STYLER_LOG(LogLevel::Info, L"diagnostics session open");
     return S_OK;
 }
 
 void CloseDiagnostics() {
-    DiagnosticsSession* session =
-        g_session.exchange(nullptr, std::memory_order_acq_rel);
+    std::shared_ptr<DiagnosticsSession> session = g_session.exchange(nullptr);
     if (!session) {
         return;
     }
-    delete session;  // Releases hooks and diagnostics exactly once.
+    // `session` is the last reference this function holds; if it is also the
+    // last reference anywhere, dropping it here (end of scope) closes the
+    // session. A concurrent ReleaseHandle holding its own reference keeps it
+    // alive until that call returns - never a dangling access.
     STYLER_LOG(LogLevel::Info, L"diagnostics session closed");
 }
 
@@ -1388,10 +1477,13 @@ A entrega do plano.
   `tests/tap/CMakeLists.txt`
 
 **Interfaces:**
-- Consumes: `Diagnostics()`, `ReleaseHandle`, `STYLER_LOG`. `Diagnostics()` só é
-  válido entre um `OpenDiagnostics` bem-sucedido (Task 4) e o
-  `CloseDiagnostics`/`SetSite(nullptr)` seguinte — verifique-o por `nullptr`
-  antes de usar. Cada handle que a travessia obtém de `GetVisualRoots`/
+- Consumes: `AcquireSession()`, `ReleaseHandle`, `STYLER_LOG`. `AcquireSession()`
+  (Task 4) devolve um `shared_ptr<DiagnosticsSession>` vazio se nenhuma sessão
+  estiver aberta — cheque com `if (!session) return ...;` antes de usar.
+  Segure esse `shared_ptr` (não extraia e guarde o `IXamlDiagnostics*` cru de
+  dentro dele) pelo tempo que a travessia levar: ele é o que mantém a sessão
+  viva mesmo com um `CloseDiagnostics`/`SetSite(nullptr)` concorrente em outra
+  thread. Cada handle que a travessia obtém de `GetVisualRoots`/
   `GetChildren` precisa ser passado a `ReleaseHandle` depois de usado (Task 4),
   senão vaza pela vida do processo explorer (spec §7.2) — a travessia sob
   demanda não ganha essa liberação de graça só por o Plano 2 ter aberto a
@@ -1649,13 +1741,16 @@ void BuildNode(IVisualTreeService3* service, InstanceHandle handle,
 }  // namespace
 
 HRESULT ExportTreeToFile(const std::wstring& path) {
-    IXamlDiagnostics* diagnostics = Diagnostics();
-    if (!diagnostics) {
+    // Holding `session` for the whole walk is what keeps IXamlDiagnostics -
+    // and everything under it - alive even if CloseDiagnostics runs
+    // concurrently on another thread (Task 4, fix round 2).
+    std::shared_ptr<DiagnosticsSession> session = AcquireSession();
+    if (!session) {
         return E_NOT_VALID_STATE;
     }
 
     IVisualTreeService3* service = nullptr;
-    HRESULT hr = diagnostics->QueryInterface(IID_PPV_ARGS(&service));
+    HRESULT hr = session->diagnostics()->QueryInterface(IID_PPV_ARGS(&service));
     if (FAILED(hr)) {
         return hr;
     }

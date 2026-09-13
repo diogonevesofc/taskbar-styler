@@ -2,12 +2,12 @@
 #include <tap/visual_tree_watcher.h>
 
 #include <atomic>
+#include <memory>
 #include <new>
 
 #include <tap/log.h>
 
 namespace styler::tap {
-namespace {
 
 // {735941A2-3EE3-495A-8DA9-972627003075}
 // Private and undocumented; read from the vendored upstream at line 10946.
@@ -18,47 +18,45 @@ constexpr GUID IID_IXamlDiagnosticsTestHooks = {
     0x495a,
     {0x8d, 0xa9, 0x97, 0x26, 0x27, 0x00, 0x30, 0x75}};
 
+// Full definition of the type forward-declared in visual_tree_watcher.h.
 struct IXamlDiagnosticsTestHooks : IUnknown {
     virtual HRESULT STDMETHODCALLTYPE UnregisterInstance(
         InstanceHandle handle) = 0;
 };
 
-// Owns one open session's IXamlDiagnostics and (when available)
-// IXamlDiagnosticsTestHooks. Both are released exactly once, from the
-// destructor, so teardown has a single gate instead of Release() calls
-// scattered across failure paths that one of them could skip.
-class DiagnosticsSession {
-public:
-    DiagnosticsSession(IXamlDiagnostics* diagnostics,
-                        IXamlDiagnosticsTestHooks* hooks)
-        : diagnostics_(diagnostics), hooks_(hooks) {}
+DiagnosticsSession::DiagnosticsSession(IXamlDiagnostics* diagnostics,
+                                        IXamlDiagnosticsTestHooks* hooks)
+    : diagnostics_(diagnostics), hooks_(hooks) {}
 
-    DiagnosticsSession(const DiagnosticsSession&) = delete;
-    DiagnosticsSession& operator=(const DiagnosticsSession&) = delete;
-
-    ~DiagnosticsSession() {
-        if (hooks_) {
-            hooks_->Release();
-        }
-        if (diagnostics_) {
-            diagnostics_->Release();
-        }
+DiagnosticsSession::~DiagnosticsSession() {
+    if (hooks_) {
+        hooks_->Release();
     }
+    if (diagnostics_) {
+        diagnostics_->Release();
+    }
+}
 
-    IXamlDiagnostics* diagnostics() const { return diagnostics_; }
-    IXamlDiagnosticsTestHooks* hooks() const { return hooks_; }
+HRESULT DiagnosticsSession::ReleaseElementHandle(InstanceHandle handle) const {
+    if (!hooks_) {
+        return S_FALSE;  // No hooks on this session; nothing to call.
+    }
+    return hooks_->UnregisterInstance(handle);
+}
 
-private:
-    IXamlDiagnostics* diagnostics_;
-    IXamlDiagnosticsTestHooks* hooks_;
-};
+namespace {
 
-// The current session, or nullptr. Written only by OpenDiagnostics/
-// CloseDiagnostics below; read through Diagnostics()/ReleaseHandle - never
-// reach for this directly from another translation unit. std::atomic because
-// the TAP is called from several explorer UI threads (same reasoning as
-// g_site in tap_boundary.cpp - see site.h).
-std::atomic<DiagnosticsSession*> g_session{nullptr};
+// The current session, or an empty pointer. Written only by
+// OpenDiagnostics/CloseDiagnostics below; read through
+// AcquireSession()/ReleaseHandle - never reach for this directly from
+// another translation unit. A load() here is itself a strong reference: the
+// session it points to cannot be destroyed while that reference is held,
+// even if another thread calls CloseDiagnostics concurrently (the TAP is
+// called from several explorer UI threads - see g_site in
+// tap_boundary.cpp/site.h for the same reasoning). This is what closed the
+// heap use-after-free a plain std::atomic<DiagnosticsSession*> had: that
+// scheme synchronized the pointer's value, not the pointee's lifetime.
+std::atomic<std::shared_ptr<DiagnosticsSession>> g_session{nullptr};
 
 // Handles successfully released so far this process. Monotonic by
 // construction: only ReleaseHandle's success path touches it, and only ever
@@ -72,12 +70,16 @@ void ReleaseHandle(InstanceHandle handle) {
         return;  // A root element's parent handle is 0; nothing to release.
     }
 
-    DiagnosticsSession* session = g_session.load(std::memory_order_acquire);
-    if (!session || !session->hooks()) {
-        return;  // No session open, or hooks unavailable - warned once above.
+    std::shared_ptr<DiagnosticsSession> session = g_session.load();
+    if (!session) {
+        return;  // No session open.
     }
 
-    HRESULT hr = session->hooks()->UnregisterInstance(handle);
+    HRESULT hr = session->ReleaseElementHandle(handle);
+    if (hr == S_FALSE) {
+        return;  // Hooks unavailable on this session - warned once already,
+                 // in OpenDiagnostics.
+    }
     if (SUCCEEDED(hr)) {
         g_released_handles.fetch_add(1, std::memory_order_relaxed);
     } else {
@@ -87,25 +89,17 @@ void ReleaseHandle(InstanceHandle handle) {
     }
 }
 
-long LiveHandleCount() {
+long ReleasedHandleCount() {
     return g_released_handles.load(std::memory_order_relaxed);
 }
 
-IXamlDiagnostics* Diagnostics() {
-    DiagnosticsSession* session = g_session.load(std::memory_order_acquire);
-    return session ? session->diagnostics() : nullptr;
+std::shared_ptr<DiagnosticsSession> AcquireSession() {
+    return g_session.load();
 }
 
 HRESULT OpenDiagnostics(IUnknown* site) {
     if (!site) {
         return E_INVALIDARG;
-    }
-
-    if (g_session.load(std::memory_order_acquire)) {
-        STYLER_LOG(LogLevel::Info,
-                   L"OpenDiagnostics called with a session already open; "
-                   L"closing and reopening");
-        CloseDiagnostics();
     }
 
     IXamlDiagnostics* diagnostics = nullptr;
@@ -128,8 +122,10 @@ HRESULT OpenDiagnostics(IUnknown* site) {
         hooks = nullptr;
     }
 
-    auto* session = new (std::nothrow) DiagnosticsSession(diagnostics, hooks);
-    if (!session) {
+    std::shared_ptr<DiagnosticsSession> session;
+    try {
+        session = std::make_shared<DiagnosticsSession>(diagnostics, hooks);
+    } catch (const std::bad_alloc&) {
         if (hooks) {
             hooks->Release();
         }
@@ -137,18 +133,35 @@ HRESULT OpenDiagnostics(IUnknown* site) {
         return E_OUTOFMEMORY;
     }
 
-    g_session.store(session, std::memory_order_release);
+    // exchange (not load-then-store) so two concurrent opens cannot each
+    // read "no session yet" and both install one, leaking whichever session
+    // gets overwritten without ever being closed. Whichever caller's
+    // exchange runs second gets the other's session back as `previous` and
+    // releases it below - exactly once, however many opens race.
+    std::shared_ptr<DiagnosticsSession> previous = g_session.exchange(session);
+    if (previous) {
+        STYLER_LOG(LogLevel::Info,
+                   L"OpenDiagnostics called with a session already open; "
+                   L"closing and reopening");
+    }
+    // `previous` goes out of scope here. If this was its last reference, its
+    // destructor (via DiagnosticsSession's) releases the old interfaces now;
+    // if a concurrent ReleaseHandle is still holding a reference to it, this
+    // merely drops our count and that call finishes safely on its own copy.
+
     STYLER_LOG(LogLevel::Info, L"diagnostics session open");
     return S_OK;
 }
 
 void CloseDiagnostics() {
-    DiagnosticsSession* session =
-        g_session.exchange(nullptr, std::memory_order_acq_rel);
+    std::shared_ptr<DiagnosticsSession> session = g_session.exchange(nullptr);
     if (!session) {
         return;
     }
-    delete session;  // Releases hooks and diagnostics exactly once.
+    // `session` is the last reference this function holds; if it is also the
+    // last reference anywhere, dropping it here (end of scope) closes the
+    // session. A concurrent ReleaseHandle holding its own reference keeps it
+    // alive until that call returns - never a dangling access.
     STYLER_LOG(LogLevel::Info, L"diagnostics session closed");
 }
 

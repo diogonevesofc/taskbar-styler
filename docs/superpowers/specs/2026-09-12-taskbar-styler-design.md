@@ -297,7 +297,14 @@ continuamente. Essa interface é privada, obtida por QI com GUID cravado; se sum
 futura do Windows, os elementos vazam.
 
 - O contador de handles vivos é métrica de primeira classe, exposta em "Diagnóstico" no menu
-  da bandeja. Crescimento monotônico indica bug.
+  da bandeja. Crescimento monotônico indica bug. **Não implementado no Plano 2** (fix round 2
+  da Task 4): a travessia sob demanda da Task 5 libera cada handle que toca dentro da própria
+  travessia (via `ReleaseHandle`), então não sobra nada vivo para contar depois que ela
+  termina — o que o Plano 2 expõe (`ReleasedHandleCount()`) é um contador de handles já
+  liberados, monotônico pelo motivo oposto (só confirma que a liberação está disparando, não
+  consegue flagrar um handle que ninguém liberou). O contador de handles *vivos* de verdade só
+  faz sentido a partir do Plano 3, o primeiro a manter elementos vivos entre um evento de
+  mudança e outro em vez de liberá-los imediatamente após o uso.
 - Se `IXamlDiagnosticsTestHooks` estiver indisponível, o TAP **avisa** em vez de vazar calado.
 
 **Nota (Plano 2 → Plano 3):** liberar um handle de dentro de `OnVisualTreeChange`
