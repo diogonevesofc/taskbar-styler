@@ -22,6 +22,9 @@ thread_local ULONGLONG t_last_queue_tick = 0;
 thread_local bool t_drain_armed = false;
 thread_local bool t_no_dispatcher_logged = false;
 thread_local winrt::Windows::System::DispatcherQueueTimer t_timer{nullptr};
+// Set after this thread's first drain, so the "initial apply" stats below
+// are logged exactly once, not on every later add/remove.
+thread_local bool t_initial_apply_logged = false;
 
 }  // namespace
 
@@ -62,6 +65,23 @@ void FlushReleasesNow() {
     STYLER_LOG(LogLevel::Info, L"drained %zu handles, %zu held (%ld released so far)",
                result.to_release.size(), result.unique_count - result.to_release.size(),
                ReleasedHandleCount());
+
+    // This thread's first drain only ever runs once the queue has sat quiet
+    // for kQuietMs (FlushReleasesIfQuiet), which the initial subscription
+    // flood's own dense burst of Add reports cannot do until it is over -
+    // unlike logging right after StartSubscription() returns in SetSite,
+    // which fires before XAML's marshalled walk can even start (see
+    // tap_boundary.cpp). So this is where Task 5's "initial apply" counters
+    // are complete.
+    if (!t_initial_apply_logged) {
+        t_initial_apply_logged = true;
+        EngineStats stats = StatsForThisThread();
+        STYLER_LOG(LogLevel::Info,
+                   L"initial apply: %zu elements, %zu properties, %zu failed, "
+                   L"%zu visual-state styles deferred",
+                   stats.styled_elements, stats.applied_properties,
+                   stats.failed_styles, stats.deferred_visual_state_styles);
+    }
 }
 
 void FlushReleasesIfQuiet() {

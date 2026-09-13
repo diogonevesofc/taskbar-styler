@@ -21,9 +21,16 @@ add_library(taskbar_styler_tap MODULE
   release_queue.cpp
   change_subscription.cpp
   style_engine.cpp
+  property_setter.cpp
+  theme_session.cpp
 )
 target_include_directories(taskbar_styler_tap PUBLIC ..)
 target_link_libraries(taskbar_styler_tap PRIVATE taskbar_styler_tap_lib)
+
+# theme_session.cpp calls into styler_core (PrepareTheme, LoadThemeFromFile,
+# ParseConfigJson) and uses SHGetKnownFolderPath/CoTaskMemFree for
+# %APPDATA%\TaskbarStyler\config.json (shell32.lib, ole32.lib).
+target_link_libraries(taskbar_styler_tap PRIVATE styler_core shell32.lib ole32.lib)
 
 # C++/WinRT comes from the Windows SDK's pre-generated headers (no NuGet, no
 # cppwinrt.exe step). WindowsApp.lib is the umbrella import library that

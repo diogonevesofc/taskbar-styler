@@ -30,6 +30,7 @@
 #include <tap/clsid.h>
 #include <tap/log.h>
 #include <tap/site.h>
+#include <tap/theme_session.h>
 #include <tap/thread_init.h>
 #include <tap/tree_export.h>
 #include <tap/visual_tree_watcher.h>
@@ -183,6 +184,26 @@ public:
                     ProbeWinRt(session);
                 }
 
+                // Goes before StartSubscription(): the subscription's
+                // initial flood is what applies this theme to every element
+                // already on screen (Task 5 brief, Step 7).
+                HRESULT theme_hr = LoadConfiguredTheme();
+                if (FAILED(theme_hr)) {
+                    STYLER_LOG(LogLevel::Error, L"LoadConfiguredTheme failed 0x%08X",
+                               static_cast<unsigned>(theme_hr));
+                }
+
+                // The "initial apply" EngineStats line is NOT logged here:
+                // StartSubscription() only starts the advise thread and
+                // returns immediately (change_subscription.h) - the actual
+                // flood is XAML marshalling the walk onto THIS UI thread,
+                // which cannot run until this SetSite call itself returns
+                // to the message loop. Logging stats here would always read
+                // zero. release_queue.cpp's FlushReleasesNow logs them
+                // instead, the first time it drains on this thread - that
+                // only happens once the queue has been quiet for kQuietMs,
+                // which the initial flood's own burst of Add reports
+                // guarantees has finished by then.
                 HRESULT sub_hr = StartSubscription();
                 if (FAILED(sub_hr)) {
                     STYLER_LOG(LogLevel::Error, L"StartSubscription failed 0x%08X",

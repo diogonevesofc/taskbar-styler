@@ -8,6 +8,7 @@ add_library(styler_core STATIC
   type_name.cpp
   blur_rewrite.cpp
   matcher.cpp
+  config.cpp
 )
 
 target_include_directories(styler_core PUBLIC include)
