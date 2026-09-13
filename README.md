@@ -22,8 +22,9 @@ Em desenvolvimento. O que já existe:
 
 - [x] `styler_core` — parsing de seletores, regras de estilo e temas
 - [x] 55 temas em JSON, com conversão provada sem perda byte a byte
-- [ ] A DLL que aplica os estilos (Plano 2)
-- [ ] O aplicativo de bandeja (Plano 3)
+- [x] TAP que carrega no explorer e exporta a árvore visual
+- [ ] Aplicar e desfazer estilos (Plano 3)
+- [ ] O aplicativo de bandeja (Plano 4)
 
 ## Compilando
 
@@ -34,6 +35,16 @@ cmake -S . -B build -G Ninja
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
+
+## Vendo a árvore visual
+
+```
+taskbar-styler load
+```
+
+Escreve `%LOCALAPPDATA%\TaskbarStyler\visual-tree.txt` com a árvore da sua
+taskbar, no mesmo formato dos seletores dos temas. É com isso que você conserta
+um tema sozinho quando uma atualização do Windows renomeia algum elemento.
 
 ## Temas
 

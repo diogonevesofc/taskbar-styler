@@ -46,3 +46,14 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build --output-on-failure
+
+      - name: Artefatos do TAP e do CLI existem
+        shell: bash
+        run: |
+          test -f build/src/cli/TaskbarStyler.Tap.dll
+          test -f build/src/cli/taskbar-styler.exe
+
+      - name: Nenhuma API de injecao no codigo
+        shell: bash
+        run: |
+          ! grep -rnE 'VirtualAllocEx|WriteProcessMemory|CreateRemoteThread|SetThreadContext' src/
