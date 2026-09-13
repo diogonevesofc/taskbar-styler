@@ -306,9 +306,14 @@ futura do Windows, os elementos vazam.
 
 | Nível | Grava | Custo |
 |---|---|---|
-| `Erro` (padrão) | falha de carga, estilo não aplicado, vazamento | ~zero |
-| `Info` | carga do TAP, tema aplicado, hosts, reinício do explorer | desprezível |
+| `Erro` | falha de carga, estilo não aplicado, vazamento | ~zero |
+| `Info` (padrão) | carga do TAP, tema aplicado, hosts, reinício do explorer | desprezível |
 | `Debug` | cada elemento da árvore | pesado, sob demanda |
+
+`Info` é o padrão porque os eventos desse nível (carga do TAP, tema aplicado) disparam uma vez
+por carregamento, não por elemento — o próprio custo "desprezível" acima já reflete isso. O
+tráfego pesado é o de `Debug` (`OnVisualTreeChange`, por elemento), que continua desligado por
+padrão; é ali que está o custo que esta tabela protege.
 
 A checagem de nível ocorre **antes** de formatar a string. Arquivo em
 `%LOCALAPPDATA%\TaskbarStyler\log.txt`, rotação em 1 MB, mais `OutputDebugStringW`.

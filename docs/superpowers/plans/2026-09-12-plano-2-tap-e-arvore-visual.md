@@ -2104,7 +2104,7 @@ O CI não roda o smoke test, mas precisa garantir que os artefatos saem. Em
       - name: Artefatos do TAP e do CLI existem
         shell: bash
         run: |
-          test -f build/src/tap/TaskbarStyler.Tap.dll
+          test -f build/src/cli/TaskbarStyler.Tap.dll
           test -f build/src/cli/taskbar-styler.exe
 
       - name: Nenhuma API de injecao no codigo
