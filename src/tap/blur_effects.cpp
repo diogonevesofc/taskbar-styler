@@ -79,6 +79,15 @@ wss::IRandomAccessStream CreateNoiseStream(float density) {
         .biSizeImage = kDataSize,
     };
 
+    // NoiseDensity is parsed from theme JSON with wcstod (src/core/blur.cpp),
+    // which accepts "nan"/"inf" text, and std::clamp does not filter
+    // non-finite input (NaN compares false against both bounds and would
+    // pass straight through). Normalize a non-finite or non-positive density
+    // to the neutral default before clamping.
+    if (!(density > 0.0f)) {
+        density = 1.0f;
+    }
+
     // Density shapes the grey distribution through a power curve; precompute
     // it over the 256 possible samples instead of calling pow 65536 times.
     const float safe_density = std::clamp(density, 0.001f, 1.0f);
@@ -150,17 +159,19 @@ HRESULT GaussianBlurEffect::GetNamedPropertyMapping(
         return E_INVALIDARG;
     }
     const std::wstring_view n(name);
-    *mapping = awge::GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT;
     if (n == L"BlurAmount") {
         *index = D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION;
+        *mapping = awge::GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT;
         return S_OK;
     }
     if (n == L"Optimization") {
         *index = D2D1_GAUSSIANBLUR_PROP_OPTIMIZATION;
+        *mapping = awge::GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT;
         return S_OK;
     }
     if (n == L"BorderMode") {
         *index = D2D1_GAUSSIANBLUR_PROP_BORDER_MODE;
+        *mapping = awge::GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT;
         return S_OK;
     }
     return E_INVALIDARG;
@@ -245,8 +256,11 @@ HRESULT ColorMatrixEffect::GetNamedPropertyMapping(
     }
     if (n == L"AlphaMode") {
         *index = D2D1_COLORMATRIX_PROP_ALPHA_MODE;
-        *mapping =
-            awge::GRAPHICS_EFFECT_PROPERTY_MAPPING_COLORMATRIX_ALPHA_MODE;
+        // DIRECT, not COLORMATRIX_ALPHA_MODE: we box a raw
+        // D2D1_COLORMATRIX_ALPHA_MODE value ourselves (GetProperty below),
+        // so no further mapping conversion is needed. Matches upstream
+        // (vendor:13253-13259) - the brief had this wrong.
+        *mapping = awge::GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT;
         return S_OK;
     }
     if (n == L"ClampOutput") {
@@ -468,13 +482,14 @@ HRESULT BorderEffect::GetNamedPropertyMapping(
         return E_INVALIDARG;
     }
     const std::wstring_view n(name);
-    *mapping = awge::GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT;
     if (n == L"ExtendX") {
         *index = D2D1_BORDER_PROP_EDGE_MODE_X;
+        *mapping = awge::GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT;
         return S_OK;
     }
     if (n == L"ExtendY") {
         *index = D2D1_BORDER_PROP_EDGE_MODE_Y;
+        *mapping = awge::GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT;
         return S_OK;
     }
     return E_INVALIDARG;

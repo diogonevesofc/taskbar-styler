@@ -61,7 +61,10 @@ struct GaussianBlurEffect
     HRESULT GetSourceCount(UINT* count) noexcept;
 
    private:
-    winrt::hstring m_name;
+    // Upstream leaves this on its type-name default for every effect it
+    // never explicitly renames (vendor:13060); Task 4's noise graph relies
+    // on that so two effects don't end up sharing an empty "" name.
+    winrt::hstring m_name{L"GaussianBlurEffect"};
 };
 
 struct ColorMatrixEffect
@@ -91,7 +94,8 @@ struct ColorMatrixEffect
     HRESULT GetSourceCount(UINT* count) noexcept;
 
    private:
-    winrt::hstring m_name;
+    // vendor:13222 - see the comment on GaussianBlurEffect::m_name.
+    winrt::hstring m_name{L"ColorMatrixEffect"};
 };
 
 struct CompositeEffect
@@ -115,7 +119,10 @@ struct CompositeEffect
     HRESULT GetSourceCount(UINT* count) noexcept;
 
    private:
-    winrt::hstring m_name;
+    // vendor:12666 - see the comment on GaussianBlurEffect::m_name. Upstream
+    // leaves the root Composite on this default (never calls its Name()
+    // setter), so Task 4's brush must match it exactly.
+    winrt::hstring m_name{L"CompositeEffect"};
 };
 
 struct FloodEffect : winrt::implements<FloodEffect, wge::IGraphicsEffect,
@@ -137,7 +144,8 @@ struct FloodEffect : winrt::implements<FloodEffect, wge::IGraphicsEffect,
     HRESULT GetSourceCount(UINT* count) noexcept;
 
    private:
-    winrt::hstring m_name;
+    // vendor:12791 - see the comment on GaussianBlurEffect::m_name.
+    winrt::hstring m_name{L"FloodEffect"};
 };
 
 struct BorderEffect : winrt::implements<BorderEffect, wge::IGraphicsEffect,
@@ -161,7 +169,10 @@ struct BorderEffect : winrt::implements<BorderEffect, wge::IGraphicsEffect,
     HRESULT GetSourceCount(UINT* count) noexcept;
 
    private:
-    winrt::hstring m_name;
+    // vendor:12918 - see the comment on GaussianBlurEffect::m_name. Upstream
+    // leaves the Border on this default (never calls its Name() setter), so
+    // Task 4's brush must match it exactly.
+    winrt::hstring m_name{L"BorderEffect"};
 };
 
 }  // namespace styler::tap
