@@ -15,6 +15,14 @@ struct ResolvedSetter {
     wux::DependencyProperty property{nullptr};
     wf::IInspectable value;  // Null when `clear` is set.
     bool clear = false;      // `Prop:=` with an empty value clears the property.
+    // Non-null when the style's value was a `<WindhawkBlur .../>`. `value`
+    // then holds the shared AcrylicBrush fallback, which IS safe to share
+    // across elements; the real brush is NOT (it captures the element's
+    // Compositor and parks a proxy in its Resources), so the engine builds
+    // one per element from this spec instead of caching it here. Points into
+    // the PreparedStyle inside the ResolvedTheme, which the setter cache
+    // already keeps alive through its own shared_ptr.
+    const styler::BlurSpec* blur = nullptr;
 };
 
 // Turns a property name into a DependencyProperty - and the style's text

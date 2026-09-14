@@ -133,6 +133,10 @@ ResolvedSetter ResolveSetter(std::wstring_view type,
     if (!clear) {
         out.value = setter.Value();
     }
+    // The blur spec rides along with the resolved property; the value stays
+    // the AcrylicBrush the markup already parsed into, so a caller that does
+    // not know about blur still gets something drawable.
+    out.blur = style.blur ? &*style.blur : nullptr;
     return out;
 }
 

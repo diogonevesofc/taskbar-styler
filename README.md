@@ -62,9 +62,13 @@ um Event nomeado; se o TAP já estiver carregado no `explorer.exe`, o tema
 troca ao vivo, sem passar por `load` de novo. **Trocar de tema não reinicia o
 Explorer; descarregar o TAP, sim (spec §6.4).**
 
-O que ainda é aproximação (Plano 3b): `WindhawkBlur` vira `AcrylicBrush`
-(sem ruído e sem `BlurAmount`); capturas `=>` e valores `{{…}}` são pulados —
-o log de `theme …` diz quantos.
+`WindhawkBlur` vira blur de composição real (grafo de efeitos D2D sobre o
+backdrop da janela, com `BlurAmount`, saturação, luminosidade e ruído); o
+`AcrylicBrush` é o fallback quando a composição não está disponível — o log de
+`apply …` conta `blur brushes` e `blur fallbacks`.
+
+O que ainda é aproximação (Plano 3b): capturas `=>` e valores `{{…}}` são
+pulados — o log de `theme …` diz quantos.
 
 ## Temas
 

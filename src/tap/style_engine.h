@@ -33,6 +33,8 @@ struct EngineStats {
     size_t applied_properties = 0;
     size_t failed_styles = 0;
     size_t deferred_visual_state_styles = 0;  // Task 6 turns this to zero.
+    size_t blur_brushes = 0;    // Real WindhawkBlur brushes created.
+    size_t blur_fallbacks = 0;  // Blurs that fell back to AcrylicBrush.
 };
 EngineStats StatsForThisThread();
 

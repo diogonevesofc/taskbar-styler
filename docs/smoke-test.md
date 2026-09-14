@@ -74,6 +74,19 @@ Pré-requisito: `cmake --build build`; Explorer reiniciado se a DLL estava carre
    ou que não bate com o total de elementos estilizados, é vazamento —
    reporte com o tema e o log.
 
-O que ainda é aproximação (Plano 3b): `WindhawkBlur` vira `AcrylicBrush`
-(sem ruído e sem `BlurAmount`); capturas `=>` e valores `{{…}}` são pulados —
-o log de `theme …` diz quantos.
+10. **Blur real.** `apply FrostyGlass` (ou `TranslucentTaskbar`). No log:
+    `N blur brushes, 0 blur fallbacks`. Visual: a taskbar borra o papel de
+    parede atrás dela e o borrão **acompanha** uma janela arrastada por baixo
+    — o `AcrylicBrush` do Plano 3 também é translúcido, então a prova é o
+    movimento, não a transparência.
+11. **Tint por tema.** `apply Command_Center` (usa
+    `TintColor="{ThemeResource SystemChromeMediumColor}"`). Alterne
+    Configurações → Personalização → Cores entre claro e escuro: o tom da
+    taskbar acompanha, sem reaplicar o tema.
+12. **Ruído.** `apply Luminosity_variant_Classic`: o grão fino é visível
+    contra um papel de parede liso.
+
+O que ainda é aproximação (Plano 3b): capturas `=>` e valores `{{…}}` são
+pulados — o log de `theme …` diz quantos. `WindhawkBlur` já não é
+aproximação: vira blur de composição real, e o `AcrylicBrush` só entra como
+fallback contado (`blur fallbacks` no log).

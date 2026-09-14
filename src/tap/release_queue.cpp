@@ -88,9 +88,11 @@ void FlushReleasesNow() {
         EngineStats stats = StatsForThisThread();
         STYLER_LOG(LogLevel::Info,
                    L"apply (as of first drain): %zu elements, %zu "
-                   L"properties, %zu failed, %zu visual-state styles deferred",
+                   L"properties, %zu failed, %zu visual-state styles deferred, "
+                   L"%zu blur brushes, %zu blur fallbacks",
                    stats.styled_elements, stats.applied_properties,
-                   stats.failed_styles, stats.deferred_visual_state_styles);
+                   stats.failed_styles, stats.deferred_visual_state_styles,
+                   stats.blur_brushes, stats.blur_fallbacks);
     }
 }
 

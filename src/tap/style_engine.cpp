@@ -10,6 +10,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include <tap/blur_brush.h>
 #include <tap/log.h>
 #include <tap/property_setter.h>
 #include <tap/release_queue.h>
@@ -318,6 +319,13 @@ void Unapply(wux::FrameworkElement const& element,
     }
     prop.applied = false;
     prop.original = nullptr;
+    // A XamlBlurBrush that is no longer on any property still holds a
+    // composition brush and a proxy entry in the element's Resources until
+    // its last reference goes. XAML drops its own reference when the value is
+    // replaced; `prop.values` is the only other holder, and it dies with the
+    // ElementState. Nothing to close by hand here - but DO NOT cache the
+    // brush anywhere longer-lived than that, which is why MakeBlurBrush is
+    // called per element and never memoized.
 }
 
 // Re-evaluates one bucket against `state_name`: apply, re-apply or restore
@@ -560,7 +568,25 @@ void OnElementAdded(ElementId id, wux::FrameworkElement const& element,
                     continue;
                 }
                 PropertyState& prop = bucket.properties[setter->property];
-                prop.values[style.visual_state] = setter->clear ? nullptr : setter->value;
+                wf::IInspectable value = setter->clear ? nullptr : setter->value;
+                if (setter->blur) {
+                    // One brush per element: a XamlBlurBrush holds the
+                    // element's Compositor and inserts a proxy key into its
+                    // Resources, so the setter cache's shared value would
+                    // wire every matched element to the first one's visual.
+                    // The AcrylicBrush in setter->value is the documented
+                    // fallback (src/core/blur_rewrite.h) and is shareable.
+                    if (auto brush = MakeBlurBrush(element, *setter->blur)) {
+                        value = brush;
+                        ++t_stats.blur_brushes;
+                    } else {
+                        ++t_stats.blur_fallbacks;
+                        STYLER_LOG(LogLevel::Error,
+                                   L"blur fell back to AcrylicBrush on %s",
+                                   type.c_str());
+                    }
+                }
+                prop.values[style.visual_state] = value;
             } catch (winrt::hresult_error const& ex) {
                 ++t_stats.failed_styles;
                 STYLER_LOG(LogLevel::Error, L"rule %zu %s=%s on %s: 0x%08X",
