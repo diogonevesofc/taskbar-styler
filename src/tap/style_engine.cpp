@@ -427,6 +427,11 @@ void RegisterPropertyWatch(ElementId id, size_t bucket_index,
                 if (local != p.last_applied) {
                     p.original = local;  // The shell changed its mind; honour it on restore.
                 }
+                // Preserve the shell's latest value above even while reset
+                // is reaching this thread, but never reapply a retired theme.
+                if (!t_cache_theme || t_cache_theme != CurrentTheme()) {
+                    return;
+                }
                 wf::IInspectable value;
                 if (!PickValue(p, CurrentStateName(bucket.group), &value)) {
                     return;
@@ -452,6 +457,9 @@ void RegisterStateWatch(ElementId id, size_t bucket_index,
         [id, bucket_index](wf::IInspectable const&,
                            wux::VisualStateChangedEventArgs const& e) {
             try {
+                if (!t_cache_theme || t_cache_theme != CurrentTheme()) {
+                    return;
+                }
                 auto it = t_state.find(id);
                 if (it == t_state.end() || bucket_index >= it->second.buckets.size()) {
                     return;
@@ -832,6 +840,9 @@ void ReapplyDynamicProperty(ElementId id, wux::DependencyProperty const& propert
     // owner pins the PreparedStyle pointers even if a nested reload clears
     // t_cache_theme; phase 3 discards results for a replaced element/theme.
     const auto theme = t_cache_theme;
+    if (!theme || theme != CurrentTheme()) {
+        return;
+    }
     std::wstring type;
     std::wstring reported;
     DynamicStyleStates styles;
@@ -889,7 +900,8 @@ void ReapplyDynamicProperty(ElementId id, wux::DependencyProperty const& propert
     // rebuilt it while phase 2 was in flight - and apply.
     auto it = t_state.find(id);
     if (it == t_state.end() || it->second.generation != generation ||
-        t_cache_theme != theme || bucket_index >= it->second.buckets.size()) {
+        t_cache_theme != theme || CurrentTheme() != theme ||
+        bucket_index >= it->second.buckets.size()) {
         return;
     }
     auto live = it->second.element.get();

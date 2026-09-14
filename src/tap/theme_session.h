@@ -17,6 +17,12 @@ HRESULT LoadConfiguredTheme();
 HRESULT StartReloadWatch();
 void StopReloadWatch();
 
+// Disables new styling and synchronously restores every initialized thread,
+// including threads whose shell host windows have been destroyed. A false
+// result leaves the theme disabled; callers must not install another theme
+// or close the diagnostics session until a later attempt succeeds.
+bool RestoreThemeOnAllThreads();
+
 // Restore on every initialized host thread, drop the subscription, reload
 // the configured theme, re-subscribe (the fresh initial flood re-applies to
 // everything, including elements the old theme never touched). Must run on

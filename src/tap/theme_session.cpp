@@ -95,7 +95,11 @@ std::optional<bool> IsOsFeatureEnabled(std::uint32_t feature_id) {
 }
 
 void WINAPI RestoreThunk(void*) {
-    RestoreAllOnThisThread();
+    // A timed-out send may finish later. Do not let an old restore undo a
+    // theme installed by a subsequent, successful reload.
+    if (!CurrentTheme()) {
+        RestoreAllOnThisThread();
+    }
 }
 
 void WINAPI ReloadThunk(void*) {
@@ -220,6 +224,34 @@ HRESULT LoadConfiguredTheme() {
     return E_FAIL;
 }
 
+bool RestoreThemeOnAllThreads() {
+    SetTheme(nullptr);
+    bool complete = true;
+    try {
+        RestoreAllOnThisThread();
+    } catch (...) {
+        complete = false;
+        STYLER_LOG(LogLevel::Error, L"restore on current thread failed");
+    }
+    // Each initialized thread owns a message-only window for its lifetime;
+    // the transient XAML host HWND is not a reliable way to find TLS state.
+    try {
+        for (HWND window : GetInitializedThreadWnds()) {
+            if (GetWindowThreadProcessId(window, nullptr) != GetCurrentThreadId() &&
+                !RunOnWindowThread(window, RestoreThunk, nullptr)) {
+                complete = false;
+            }
+        }
+    } catch (...) {
+        complete = false;
+    }
+    if (!complete) {
+        STYLER_LOG(LogLevel::Error,
+                   L"restore incomplete: theme remains disabled; retry required");
+    }
+    return complete;
+}
+
 void ReloadThemeOnUiThread() {
     try {
         STYLER_LOG(LogLevel::Info, L"reload requested");
@@ -238,16 +270,10 @@ void ReloadThemeOnUiThread() {
         //    Doing this first also makes a Deferred return, just below,
         //    coherent: the taskbar ends up fully restored either way, never
         //    left mid-style with a theme that is no longer installed.
-        SetTheme(nullptr);
-        // 1. Restore, on every thread that may hold state. This thread
-        //    first (direct call - it is the taskbar UI thread, the one
-        //    SetSite ran on), then each other host through its own message
-        //    loop.
-        RestoreAllOnThisThread();
-        for (HWND host : GetXamlHostWnds()) {
-            if (GetWindowThreadProcessId(host, nullptr) != GetCurrentThreadId()) {
-                RunOnWindowThread(host, RestoreThunk, nullptr);
-            }
+        // 1. Restore all initialized threads, even when TaskView/flyouts
+        //    have destroyed their host HWNDs but retained their XAML state.
+        if (!RestoreThemeOnAllThreads()) {
+            return;
         }
         // 2. Drop the subscription so the re-advise below re-floods.
         //    Deferred means the advise thread is still inside

@@ -120,8 +120,24 @@ public:
                 // must not race SetSite(nullptr) for ownership of the
                 // subscription it is about to stop.
                 StopReloadWatch();
+                if (!RestoreThemeOnAllThreads()) {
+                    // Keep the session backing any state we could not
+                    // restore. A late dispatch may still be in flight.
+                    STYLER_LOG(LogLevel::Error,
+                               L"teardown deferred: restore incomplete");
+                    return S_OK;
+                }
                 StopSubscription();
                 CloseDiagnostics();
+                return S_OK;
+            }
+
+            // A previous teardown may have left a live session because one
+            // thread could not be restored. Retry that barrier before a load
+            // replaces its session/theme; its TLS state still belongs to it.
+            if (AcquireSession() && !RestoreThemeOnAllThreads()) {
+                STYLER_LOG(LogLevel::Error,
+                           L"load deferred: previous restore incomplete");
                 return S_OK;
             }
 

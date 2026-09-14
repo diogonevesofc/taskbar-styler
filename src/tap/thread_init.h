@@ -15,6 +15,10 @@ namespace styler::tap {
 std::vector<HWND> GetXamlHostWnds();
 HWND GetTaskbarUiWnd();
 
+// One message-only window per initialized thread. Unlike the shell's XAML
+// hosts, these remain available while a flyout is closed and its thread lives.
+std::vector<HWND> GetInitializedThreadWnds();
+
 using ThreadProc = void(WINAPI*)(void* parameter);
 
 // Runs `proc` on the thread owning `hWnd`, via a WH_CALLWNDPROC hook and a

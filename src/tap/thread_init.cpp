@@ -11,12 +11,50 @@ namespace styler::tap {
 namespace {
 
 thread_local bool t_initialized = false;
+thread_local HWND t_dispatch_window = nullptr;
 std::atomic<HWINEVENTHOOK> g_host_hook{nullptr};
+
+constexpr wchar_t kDispatchWindowClass[] =
+    L"TaskbarStyler_ThreadDispatch_63762654_9768_4CAB_871C_386A9193E22D";
+
+LRESULT CALLBACK DispatchWindowProc(HWND window, UINT message,
+                                    WPARAM wparam, LPARAM lparam) {
+    // No XAML/COM work during window destruction: thread/apartment teardown
+    // may already be in progress. The OS owns the window's thread lifetime.
+    if (message == WM_NCDESTROY && t_dispatch_window == window) {
+        t_dispatch_window = nullptr;
+        t_initialized = false;
+    }
+    return DefWindowProcW(window, message, wparam, lparam);
+}
+
+HWND CreateDispatchWindow() {
+    HMODULE module = nullptr;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                               GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCWSTR>(&DispatchWindowProc),
+                           &module)) {
+        return nullptr;
+    }
+    WNDCLASSEXW cls{};
+    cls.cbSize = sizeof(cls);
+    cls.lpfnWndProc = DispatchWindowProc;
+    cls.hInstance = module;
+    cls.lpszClassName = kDispatchWindowClass;
+    if (!RegisterClassExW(&cls) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+        return nullptr;
+    }
+    // The shell host is deliberately not a parent/owner: closing TaskView
+    // must not destroy the only way to restore this thread's retained state.
+    return CreateWindowExW(0, kDispatchWindowClass, nullptr, 0,
+                           0, 0, 0, 0, HWND_MESSAGE, nullptr, module, nullptr);
+}
 
 struct RunParam {
     ThreadProc proc;
     void* param;
     HWND target;
+    std::atomic<bool> completed{false};
 };
 
 UINT RunMessage() {
@@ -87,6 +125,19 @@ std::vector<HWND> GetXamlHostWnds() {
     return hosts;
 }
 
+std::vector<HWND> GetInitializedThreadWnds() {
+    std::vector<HWND> windows;
+    HWND window = nullptr;
+    while ((window = FindWindowExW(HWND_MESSAGE, window,
+                                    kDispatchWindowClass, nullptr)) != nullptr) {
+        DWORD pid = 0;
+        if (GetWindowThreadProcessId(window, &pid) && pid == GetCurrentProcessId()) {
+            windows.push_back(window);
+        }
+    }
+    return windows;
+}
+
 HWND GetTaskbarUiWnd() {
     HWND tray = nullptr;
     EnumWindows(FindTrayProc, reinterpret_cast<LPARAM>(&tray));
@@ -104,8 +155,13 @@ bool RunOnWindowThread(HWND hWnd, ThreadProc proc, void* param) {
         return false;
     }
     if (thread_id == GetCurrentThreadId()) {
-        proc(param);
-        return true;
+        try {
+            proc(param);
+            return true;
+        } catch (...) {
+            STYLER_LOG(LogLevel::Error, L"RunOnWindowThread callback threw");
+            return false;
+        }
     }
 
     HHOOK hook = SetWindowsHookExW(
@@ -125,7 +181,13 @@ bool RunOnWindowThread(HWND hWnd, ThreadProc proc, void* param) {
                     // happen to share a thread_id, which is the realistic
                     // case.
                     if (cwp->hwnd == p->target) {
-                        p->proc(p->param);
+                        try {
+                            p->proc(p->param);
+                            p->completed.store(true, std::memory_order_release);
+                        } catch (...) {
+                            // A callback exception must not escape into the
+                            // shell's message loop. The caller sees false.
+                        }
                     }
                 }
             }
@@ -185,12 +247,26 @@ bool RunOnWindowThread(HWND hWnd, ThreadProc proc, void* param) {
     // A successful synchronous send returns only after the target thread
     // finished dispatching the message, hooks included: nothing can reach
     // `rp` any more.
+    const bool completed = rp->completed.load(std::memory_order_acquire);
     delete rp;
-    return true;
+    if (!completed) {
+        STYLER_LOG(LogLevel::Error,
+                   L"RunOnWindowThread callback did not complete for hwnd %p",
+                   hWnd);
+    }
+    return completed;
 }
 
 void InitializeForCurrentThread() {
     if (t_initialized) {
+        return;
+    }
+    t_dispatch_window = CreateDispatchWindow();
+    if (!t_dispatch_window) {
+        const DWORD error = GetLastError();
+        STYLER_LOG(LogLevel::Error,
+                   L"thread %lu initialization failed: dispatch window error %lu",
+                   GetCurrentThreadId(), error);
         return;
     }
     t_initialized = true;
@@ -203,6 +279,9 @@ void UninitializeForCurrentThread() {
         return;
     }
     t_initialized = false;
+    if (t_dispatch_window) {
+        DestroyWindow(t_dispatch_window);
+    }
     STYLER_LOG(LogLevel::Info, L"uninitialized for thread %lu",
                GetCurrentThreadId());
 }
