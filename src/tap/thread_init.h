@@ -19,6 +19,12 @@ using ThreadProc = void(WINAPI*)(void* parameter);
 
 // Runs `proc` on the thread owning `hWnd`, via a WH_CALLWNDPROC hook and a
 // registered message. Documented API - no code is patched.
+//
+// `false` means not confirmed - a timeout or a dispatch failure - not
+// "proc did not run": on that path `proc` may still run later, on the
+// target thread, after this call has already returned. `param` must
+// therefore never point at storage the caller could free in the
+// meantime - every current caller passes nullptr.
 bool RunOnWindowThread(HWND hWnd, ThreadProc proc, void* param);
 
 void InitializeForCurrentThread();

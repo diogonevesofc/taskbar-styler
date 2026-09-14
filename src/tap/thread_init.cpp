@@ -160,6 +160,11 @@ bool RunOnWindowThread(HWND hWnd, ThreadProc proc, void* param) {
                                        reinterpret_cast<LPARAM>(rp),
                                        SMTO_ABORTIFHUNG, kRunTimeoutMs,
                                        &result);
+    // Captured before UnhookWindowsHookEx: that call can set the
+    // thread's last-error itself, which would otherwise overwrite
+    // whatever SendMessageTimeoutW left behind by the time the log call
+    // below reads it.
+    DWORD err = GetLastError();
     UnhookWindowsHookEx(hook);
 
     if (!sent) {
@@ -174,7 +179,7 @@ bool RunOnWindowThread(HWND hWnd, ThreadProc proc, void* param) {
         STYLER_LOG(LogLevel::Error,
                    L"RunOnWindowThread timed out or failed for hwnd %p "
                    L"(thread %lu, error %lu)",
-                   hWnd, thread_id, GetLastError());
+                   hWnd, thread_id, err);
         return false;
     }
     // A successful synchronous send returns only after the target thread

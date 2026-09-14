@@ -206,3 +206,15 @@ TEST_CASE("DescribeIncompleteTree is quiet on a complete tree") {
     };
     CHECK(styler::tap::DescribeIncompleteTree(reported).empty());
 }
+
+TEST_CASE("DescribeIncompleteTree does not double-count a duplicate child report") {
+    using styler::tap::Reported;
+    std::vector<Reported> reported{
+        {1, 0, 0, 2, L"Taskbar.TaskbarFrame", L""},
+        {2, 1, 0, 0, L"Grid", L"RootGrid"},
+        {2, 1, 1, 0, L"Grid", L"RootGrid"},
+    };
+    auto lines = styler::tap::DescribeIncompleteTree(reported);
+    REQUIRE(lines.size() == 1);
+    CHECK(lines[0] == L"Taskbar.TaskbarFrame: 1 of 2 children reported");
+}

@@ -126,16 +126,20 @@ std::vector<std::wstring> DescribeIncompleteTree(
     const std::vector<Reported>& reported) {
     // Count how many children each reported handle actually received. A
     // handle reported twice keeps its first report (same rule BuildForest
-    // uses), so the declared count comes from the first entry too.
+    // uses): the declared count comes from that first entry, and so does its
+    // contribution to the parent's delivered count - a duplicate report of
+    // the same child is skipped entirely, not counted as a second child, or
+    // the function would stay quiet on a batch that truncated after
+    // re-reporting one child instead of delivering the next one.
     std::map<unsigned long long, unsigned int> declared;
     std::map<unsigned long long, unsigned int> delivered;
     std::vector<unsigned long long> order;
     for (const auto& r : reported) {
         if (declared.emplace(r.handle, r.num_children).second) {
             order.push_back(r.handle);
-        }
-        if (r.parent != 0) {
-            ++delivered[r.parent];
+            if (r.parent != 0) {
+                ++delivered[r.parent];
+            }
         }
     }
 
