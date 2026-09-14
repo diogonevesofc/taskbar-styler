@@ -142,6 +142,50 @@ TEST_CASE("every referenced name is reported once, in use order") {
     CHECK(deps[2] == L"nope");
 }
 
+TEST_CASE("the ternary short-circuits: the untaken branch is not evaluated") {
+    Vars v = CorpusVars();
+    // Fix round 1: matches upstream (vendor:16330-16357) - the untaken branch
+    // is parsed (to advance the position and enforce syntax) but not
+    // evaluated, so a division by zero, an undefined variable used
+    // arithmetically, or an unknown function call in it must not skip the
+    // style. This is the guard idiom `{{x == 0 ? 0 : 100/x}}`.
+    auto guard_taken = Expand(v, L"{{TaskHeight == 40 ? 0 : 1/0}}");
+    REQUIRE(guard_taken.has_value());
+    CHECK(*guard_taken == L"0");
+
+    auto guard_else = Expand(v, L"{{TaskHeight != 40 ? 1/0 : 0}}");
+    REQUIRE(guard_else.has_value());
+    CHECK(*guard_else == L"0");
+
+    auto undefined_in_dead_branch =
+        Expand(v, L"{{TaskHeight == 40 ? 0 : nope + 1}}");
+    REQUIRE(undefined_in_dead_branch.has_value());
+    CHECK(*undefined_in_dead_branch == L"0");
+
+    auto unknown_fn_in_dead_branch =
+        Expand(v, L"{{TaskHeight == 40 ? 0 : nosuchfn(1, 2)}}");
+    REQUIRE(unknown_fn_in_dead_branch.has_value());
+    CHECK(*unknown_fn_in_dead_branch == L"0");
+
+    // The taken branch still fails closed as usual.
+    CHECK_FALSE(Expand(v, L"{{TaskHeight != 40 ? 0 : 1/0}}").has_value());
+}
+
+TEST_CASE("a variable used only in the untaken ternary branch is not a dependency") {
+    Vars v = CorpusVars();
+    std::vector<std::wstring> deps;
+    auto out = styler::ExpandStyleVariables(
+        L"{{TaskHeight == 40 ? BtnW : ImageIconWidth}}", v.Lookup(), &deps);
+    REQUIRE(out.has_value());
+    CHECK(*out == L"44");
+    // TaskHeight (the condition) and BtnW (the taken branch) are real
+    // dependencies; ImageIconWidth, used only in the untaken branch, must
+    // not be - Task 6 must not recompute this style when it alone changes.
+    REQUIRE(deps.size() == 2);
+    CHECK(deps[0] == L"TaskHeight");
+    CHECK(deps[1] == L"BtnW");
+}
+
 TEST_CASE("FormatDoubleInvariant round-trips without trailing zeros") {
     CHECK(styler::FormatDoubleInvariant(38.0) == L"38");
     CHECK(styler::FormatDoubleInvariant(19.5) == L"19.5");

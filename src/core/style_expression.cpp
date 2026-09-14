@@ -37,7 +37,10 @@ class EvalError : public std::runtime_error {
 // precedence. Arithmetic, the unary sign, the relational comparisons and
 // min/max require numbers; == and != compare two numbers or two strings and
 // treat a number-versus-string mismatch as unequal; the conditional's
-// condition must be numeric but its branches need not be.
+// condition must be numeric but its branches need not be. The conditional
+// short-circuits: the untaken branch is parsed (to advance the position and
+// enforce syntax) but not evaluated, so it cannot fail the whole expression
+// or add a dependency - see live_.
 // Ported from upstream vendor:16220-16650.
 class Evaluator {
    public:
@@ -103,11 +106,18 @@ class Evaluator {
 
     const StyleVariableValue* Lookup(std::wstring_view name) const;
 
-    static double RequireNumber(const ExprValue& v) {
-        if (!v.IsNumber()) {
+    // In a dead ternary branch (live_ == false) the value is discarded, so a
+    // non-numeric operand is tolerated (reported as 0) instead of aborting
+    // the whole expression. Mirrors upstream's RequireNumber
+    // (vendor:16296-16307).
+    double RequireNumber(const ExprValue& v) const {
+        if (v.IsNumber()) {
+            return *v.number;
+        }
+        if (live_) {
             throw EvalError("expected a number");
         }
-        return *v.number;
+        return 0.0;
     }
 
     static bool ValuesEqual(const ExprValue& a, const ExprValue& b) {
@@ -119,6 +129,11 @@ class Evaluator {
 
     ExprValue ParseExpression() { return ParseTernary(); }
 
+    // Short-circuit, matching upstream (vendor:16330-16357): only the taken
+    // branch is evaluated. The untaken branch is still parsed - to advance
+    // the position and enforce syntax - with live_ cleared, which suppresses
+    // that branch's value-level errors (division by zero, a non-numeric or
+    // undefined variable, an unknown function) and its dependency capture.
     ExprValue ParseTernary() {
         ExprValue cond = ParseEquality();
         SkipSpace();
@@ -126,13 +141,22 @@ class Evaluator {
             return cond;
         }
         ++pos_;
-        double c = RequireNumber(cond);
+        bool cond_true = RequireNumber(cond) != 0.0;
+        bool prev_live = live_;
+
+        live_ = prev_live && cond_true;
         ExprValue then_value = ParseExpression();
+        live_ = prev_live;
+
         if (!Take(L':')) {
             throw EvalError("expected ':' in conditional");
         }
+
+        live_ = prev_live && !cond_true;
         ExprValue else_value = ParseTernary();
-        return c != 0.0 ? then_value : else_value;
+        live_ = prev_live;
+
+        return cond_true ? then_value : else_value;
     }
 
     ExprValue ParseEquality() {
@@ -207,7 +231,13 @@ class Evaluator {
             double lhs = RequireNumber(v);
             double rhs = RequireNumber(ParseUnary());
             if (c == L'/' && rhs == 0.0) {
-                throw EvalError("division by zero");
+                if (live_) {
+                    throw EvalError("division by zero");
+                }
+                // Dead ternary branch: the result is discarded, so skip the
+                // divide instead of throwing or producing inf/nan.
+                v = ExprValue::Number(lhs);
+                continue;
             }
             v = ExprValue::Number(c == L'*' ? lhs * rhs : lhs / rhs);
         }
@@ -297,9 +327,10 @@ class Evaluator {
             std::wstring_view name = text_.substr(start, pos_ - start);
             SkipSpace();
             if (Peek() == L'(') {
-                if (name != L"min" && name != L"max") {
-                    throw EvalError("unknown function");
-                }
+                // The args are always parsed - even for an unknown name or a
+                // dead branch - so the position ends up past the call no
+                // matter what; only whether an unknown name is an error
+                // depends on live_ (vendor:16575-16597).
                 ++pos_;
                 ExprValue a = ParseExpression();
                 if (!Take(L',')) {
@@ -311,8 +342,24 @@ class Evaluator {
                 }
                 double x = RequireNumber(a);
                 double y = RequireNumber(b);
-                return ExprValue::Number(name == L"min" ? (x < y ? x : y)
-                                                        : (x > y ? x : y));
+                if (name == L"min") {
+                    return ExprValue::Number(x < y ? x : y);
+                }
+                if (name == L"max") {
+                    return ExprValue::Number(x > y ? x : y);
+                }
+                if (live_) {
+                    throw EvalError("unknown function");
+                }
+                return ExprValue::Number(0.0);
+            }
+            if (!live_) {
+                // Dead ternary branch: skip the lookup along with dependency
+                // capture, same as the value-level errors below - the branch
+                // must not abort the whole expression or make Task 6
+                // recompute on a variable this style does not actually use
+                // (vendor:16601-16608).
+                return ExprValue::String(std::wstring());
             }
             const StyleVariableValue* var = Lookup(name);
             if (!var) {
@@ -335,6 +382,9 @@ class Evaluator {
     const StyleVariableLookup& lookup_;
     std::vector<std::wstring>* deps_;
     size_t pos_ = 0;
+    // False while parsing the untaken branch of a ternary: value-level
+    // errors and dependency capture are suppressed for it (vendor:16333).
+    bool live_ = true;
 };
 
 void AddDependency(std::vector<std::wstring>* deps, std::wstring_view name) {
