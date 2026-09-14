@@ -61,8 +61,13 @@ thread_local uint64_t t_sequence = 0;
 thread_local int t_propagation_depth = 0;
 constexpr int kMaxPropagationDepth = 8;
 
+// thread_local, like every other piece of state here: the engine installs
+// this on each host thread's first styled element (style_engine.cpp), so a
+// process-global `static` would have every new thread destroy-and-reconstruct
+// the std::function while another thread is testing or calling it - a real
+// data race as soon as a second taskbar surface exists (found in review).
 ReapplyPropertyFn& ReapplyCallback() {
-    static ReapplyPropertyFn fn;
+    static thread_local ReapplyPropertyFn fn;
     return fn;
 }
 
@@ -218,10 +223,26 @@ void RegisterCapture(ElementId id, wux::FrameworkElement const& element,
     captures.element = element;
     for (const CaptureSubscription& existing : captures.subscriptions) {
         if (existing.property == property) {
-            STYLER_LOG(LogLevel::Error,
+            // Debug, not Error: OnElementAdded treats a re-report as routine,
+            // so this is the normal path for any capturing element that gets
+            // reported twice - logging it at Error manufactured ERR noise and
+            // undermined the smoke test's own "0 ERR" check (found in review).
+            STYLER_LOG(LogLevel::Debug,
                        L"capture: this element already captures that property "
-                       L"as '%s'; dropping '%s'",
+                       L"as '%s'; keeping it, dropping '%s'",
                        existing.name.c_str(), name.c_str());
+            // The subscription still stands, but the element may have been
+            // reparented since: refresh the chain now rather than leaving a
+            // stale one until the captured value next changes.
+            auto vit = t_variables.find(existing.name);
+            if (vit != t_variables.end()) {
+                for (CaptureSite& s : vit->second) {
+                    if (s.id == id) {
+                        s.chain = AncestorChain(element);
+                        break;
+                    }
+                }
+            }
             return;
         }
     }
@@ -341,6 +362,16 @@ const styler::StyleVariableValue* LookupForConsumer(
     const CaptureSite* best = nullptr;
     size_t best_depth = 0;
     for (const CaptureSite& site : it->second) {
+        // A dead capturer must not win: a capture-only element has no
+        // ElementState, so its handle is released and its death is noticed
+        // only by the amortized reaper. Until then its `chain` is a vector of
+        // freed ABI pointers, and XAML recycles same-type elements to the
+        // same addresses at the same depth - so a stale chain can share a
+        // spuriously longer prefix, win this contest, and serve a dead
+        // element's frozen number (found in review).
+        if (!site.element.get()) {
+            continue;
+        }
         size_t depth = 0;
         while (depth < site.chain.size() && depth < consumer_chain.size() &&
                site.chain[depth] == consumer_chain[depth]) {
@@ -384,23 +415,31 @@ void ForgetElementVariables(ElementId id) {
             } catch (...) {
             }
         }
-        // Collected before erasing, so the propagation below sees the state
-        // WITHOUT this element's captures.
-        std::vector<std::wstring> names;
-        for (const CaptureSubscription& sub : it->second.subscriptions) {
-            names.push_back(sub.name);
-        }
         t_element_captures.erase(it);
-        for (const std::wstring& name : names) {
-            auto vit = t_variables.find(name);
-            if (vit == t_variables.end()) {
-                continue;
-            }
+        // Swept by id across every variable, NOT retracted by subscription
+        // name: RegisterCapture pushes the CaptureSite before it subscribes,
+        // so a throw in between leaves a site whose name appears in no
+        // subscription - retracting by name would strand that orphan,
+        // publishing a frozen value with nothing able to reach it again
+        // (found in review).
+        std::vector<std::wstring> names;
+        for (auto vit = t_variables.begin(); vit != t_variables.end();) {
+            const size_t before = vit->second.size();
             std::erase_if(vit->second,
                           [id](const CaptureSite& s) { return s.id == id; });
-            if (vit->second.empty()) {
-                t_variables.erase(vit);
+            if (vit->second.size() != before) {
+                names.push_back(vit->first);
             }
+            if (vit->second.empty()) {
+                vit = t_variables.erase(vit);
+            } else {
+                ++vit;
+            }
+        }
+        // Every retraction lands before the first propagation, so a consumer
+        // recomputing here sees the state WITHOUT any of this element's
+        // captures - not just without the one being retracted.
+        for (const std::wstring& name : names) {
             PropagateChange(name);
         }
     }

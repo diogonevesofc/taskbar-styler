@@ -45,8 +45,10 @@ struct PropertyState {
     std::map<std::wstring, wf::IInspectable> values;
     // For a dynamic value (`{{...}}`): the style whose text is re-expanded
     // per element, keyed by visual state name exactly like `values`. Empty
-    // for a static property. Points into the ResolvedTheme, which t_cache_theme
-    // keeps alive.
+    // for a static property. Points into the ResolvedTheme, which this
+    // thread's t_cache_theme holds a ref to for exactly as long as any of
+    // these pointers can exist - see AdoptTheme, which OnElementAdded calls
+    // unconditionally before any of them is stored.
     std::map<std::wstring, const styler::PreparedStyle*> dynamic_styles;
     bool applied = false;           // We currently hold a custom value.
     wf::IInspectable original;      // Valid while `applied`.
@@ -224,14 +226,30 @@ private:
     std::wstring reported_;
 };
 
-const ResolvedSetter* CachedSetter(
-    const std::shared_ptr<const styler::ResolvedTheme>& theme,
-    const styler::PreparedStyle& style, std::wstring_view type,
-    std::wstring_view fallback) {
+// Adopts `theme` as this thread's cache owner, dropping the setter cache when
+// it actually changed. Called unconditionally from OnElementAdded, not just
+// from CachedSetter: an element matched ONLY by dynamic styles never reaches
+// CachedSetter, yet its PropertyState::dynamic_styles stores PreparedStyle*
+// into this very theme. ReloadThemeOnUiThread does SetTheme(nullptr) before
+// any thread restores, so on a host thread where no static style was ever
+// resolved that store would free the theme while those pointers are still
+// live - and that thread's very next move (RestoreAllOnThisThread ->
+// ClearStyleVariablesOnThisThread -> PropagateChange -> ReapplyDynamicProperty
+// -> ResolveDynamicValue) dereferences them. Holding the ref here is what
+// makes dynamic_styles' "kept alive by t_cache_theme" true by construction
+// rather than by accident (found in review).
+void AdoptTheme(const std::shared_ptr<const styler::ResolvedTheme>& theme) {
     if (t_cache_theme.get() != theme.get()) {
         t_setter_cache.clear();
         t_cache_theme = theme;
     }
+}
+
+const ResolvedSetter* CachedSetter(
+    const std::shared_ptr<const styler::ResolvedTheme>& theme,
+    const styler::PreparedStyle& style, std::wstring_view type,
+    std::wstring_view fallback) {
+    AdoptTheme(theme);
     auto it = t_setter_cache.find(&style);
     if (it != t_setter_cache.end()) {
         return &it->second;
@@ -527,6 +545,8 @@ void OnElementAdded(ElementId id, wux::FrameworkElement const& element,
         t_callback_installed = true;
         SetReapplyPropertyCallback(&ReapplyDynamicProperty);
     }
+    // Before anything can store a PreparedStyle* into dynamic_styles.
+    AdoptTheme(theme);
     MergeResourceVariablesForThisThread(theme);
     std::wstring reported = reported_type ? reported_type : L"";
     XamlElementView view(element, reported);
@@ -753,39 +773,91 @@ void OnElementAdded(ElementId id, wux::FrameworkElement const& element,
                state.buckets.size());
 }
 
+// Runs from a layout event (SizeChanged) by way of the variable store, and
+// ResolveDynamicValue below calls XamlReader.Load, which pumps and can
+// re-enter this thread - a nested report can then call RestoreElement and
+// clear or reallocate the very `buckets` vector a reference would point into.
+// So this holds NOTHING borrowed across that call: it locates and copies,
+// then resolves, then re-finds the state and applies. Same bug class as the
+// Plano 3 crash hunt (element_registry.cpp:29-45), and this instance is the
+// one that actually fires on every resize.
 void ReapplyDynamicProperty(ElementId id, wux::DependencyProperty const& property) {
-    auto it = t_state.find(id);
-    if (it == t_state.end()) {
-        return;
-    }
-    ElementState& state = it->second;
-    auto element = state.element.get();
-    if (!element) {
-        return;
-    }
-    const std::vector<void*> chain = AncestorChain(element);
-    for (size_t i = 0; i < state.buckets.size(); ++i) {
-        VsgBucket& bucket = state.buckets[i];
-        auto pit = bucket.properties.find(property);
-        if (pit == bucket.properties.end() || pit->second.dynamic_styles.empty()) {
-            continue;
+    // Phase 1: locate and COPY everything the resolve step needs.
+    std::wstring type;
+    std::wstring reported;
+    std::vector<std::pair<std::wstring, const styler::PreparedStyle*>> styles;
+    size_t bucket_index = 0;
+    wux::FrameworkElement element{nullptr};
+    {
+        auto it = t_state.find(id);
+        if (it == t_state.end()) {
+            return;
         }
-        PropertyState& prop = pit->second;
-        for (const auto& [visual_state, style] : prop.dynamic_styles) {
-            wf::IInspectable value;
-            if (ResolveDynamicValue(id, property, *style, chain, state.type,
-                                    state.reported, &value)) {
-                prop.values[visual_state] = value;
-            } else {
-                // Unresolvable again: drop the entry so PickValue falls
-                // through to Unapply rather than re-pushing a stale number.
-                prop.values.erase(visual_state);
+        ElementState& state = it->second;
+        element = state.element.get();
+        if (!element) {
+            return;
+        }
+        bool found = false;
+        for (size_t i = 0; i < state.buckets.size() && !found; ++i) {
+            auto pit = state.buckets[i].properties.find(property);
+            if (pit == state.buckets[i].properties.end() ||
+                pit->second.dynamic_styles.empty()) {
+                continue;
+            }
+            bucket_index = i;  // A property lives in exactly one bucket.
+            found = true;
+            for (const auto& [visual_state, style] : pit->second.dynamic_styles) {
+                styles.emplace_back(visual_state, style);
             }
         }
-        ApplyBucketForState(id, element, bucket, CurrentStateName(bucket.group),
-                            false);
-        return;  // A property lives in exactly one bucket.
+        if (!found) {
+            return;
+        }
+        type = state.type;
+        reported = state.reported;
     }
+
+    // Phase 2: resolve. May re-enter this thread; nothing above is borrowed.
+    const std::vector<void*> chain = AncestorChain(element);
+    std::vector<std::pair<std::wstring, std::optional<wf::IInspectable>>> resolved;
+    resolved.reserve(styles.size());
+    for (const auto& [visual_state, style] : styles) {
+        wf::IInspectable value;
+        if (ResolveDynamicValue(id, property, *style, chain, type, reported,
+                                &value)) {
+            resolved.emplace_back(visual_state, value);
+        } else {
+            // Unresolvable again: no value, so the entry is dropped below and
+            // PickValue falls through to Unapply rather than re-pushing a
+            // stale number.
+            resolved.emplace_back(visual_state, std::nullopt);
+        }
+    }
+
+    // Phase 3: re-find the state - a nested report may have torn it down or
+    // rebuilt it while phase 2 was in flight - and apply.
+    auto it = t_state.find(id);
+    if (it == t_state.end() || bucket_index >= it->second.buckets.size()) {
+        return;
+    }
+    auto live = it->second.element.get();
+    if (!live) {
+        return;
+    }
+    VsgBucket& bucket = it->second.buckets[bucket_index];
+    auto pit = bucket.properties.find(property);
+    if (pit == bucket.properties.end()) {
+        return;
+    }
+    for (auto& [visual_state, value] : resolved) {
+        if (value) {
+            pit->second.values[visual_state] = *value;
+        } else {
+            pit->second.values.erase(visual_state);
+        }
+    }
+    ApplyBucketForState(id, live, bucket, CurrentStateName(bucket.group), false);
 }
 
 void OnElementRemoved(ElementId id) {
