@@ -31,8 +31,9 @@ void RegisterCapture(ElementId id, wux::FrameworkElement const& element,
                      wux::DependencyProperty const& property,
                      const std::wstring& name);
 
-// Records that (`id`, `property`) used `deps` the last time its value was
-// expanded, replacing whatever it used before. An empty `deps` unregisters it.
+// Records the union of `deps` across all effective visual states of
+// (`id`, `property`), replacing its previous union. An empty `deps`
+// unregisters it; callers must not register individual states separately.
 void RegisterConsumer(ElementId id, wux::DependencyProperty const& property,
                       const std::vector<std::wstring>& deps);
 

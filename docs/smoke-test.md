@@ -65,14 +65,15 @@ Pré-requisito: `cmake --build build`; Explorer reiniciado se a DLL estava carre
    configurações rápidas com um tema aplicado: sem crash; log mostra
    `drained N handles, M held` após cada rajada.
 9. **Handles estáveis**: deixe a taskbar parada 10 minutos com tema aplicado.
-   O invariante é `held == elementos estilizados` — M em `drained … M held`
-   é a contagem de handles retidos porque o elemento carrega estado nosso,
-   não uma contagem solta; confira que M bate com o `elements` da última
-   linha `apply (as of first drain)`, não só que M "não muda" de um drain
-   para o outro. Depois de um `reset` (nenhum tema aplicado), M deve ser 0.
-   `released so far` não deve crescer com a taskbar parada. Um M que cresce,
-   ou que não bate com o total de elementos estilizados, é vazamento —
-   reporte com o tema e o log.
+   Registre o log durante o repouso e após `reset`. M em `drained … M held`
+   conta apenas os handles mantidos **naquele lote**, calculados como
+   `unique_count - to_release.size()` em `release_queue.cpp`; não representa
+   todos os handles vivos. `held == elementos estilizados` não é um invariante
+   que esse log possa verificar, e `0 held` após reset não prova ausência de
+   vazamento global. Crescimento contínuo de memória ou liberações contínuas
+   em repouso pedem investigação com tema e log. A contagem global exigida
+   pela spec §7.2 continua pendente para o Plano 4: este item não deve ser
+   marcado como prova de handles vivos estáveis com a instrumentação atual.
 
 10. **Blur real.** `apply FrostyGlass` (ou `TranslucentTaskbar`). No log:
     `N blur brushes, 0 blur fallbacks`. Visual: a taskbar borra o papel de
@@ -110,3 +111,38 @@ ledger qual variável.
 `AcrylicBrush` só entra como fallback contado (`blur fallbacks` no log).
 Capturas `=>` e valores `{{…}}` também já são reais (Plano 3b/Task 6) — o log
 de `theme …` diz quantos de cada.
+
+### Exceção conhecida durante rebuild do painel de botões
+
+Com `Pills`, mudar o agrupamento da taskbar ou abrir aplicativos pode fazer
+`ActualWidth` passar por zero durante a reconstrução do painel. Nesse
+intervalo, `{{BtnW-6}}` resolve para `-6`, e o XAML rejeita `MinWidth` ou
+`MaxWidth` negativo com `0x80070057`.
+O smoke da Task 6 registrou 136 `ERR` em 777 ms na expansão dos rótulos;
+as pílulas se corrigiram após o layout, sem efeito visual persistente, e o
+encolhimento não produziu erros. Esses números são evidência daquele smoke,
+não um limite de aceitação.
+
+Na validação da retomada, o nome da propriedade no log confirmou ambas:
+28 erros de `MinWidth`/`MaxWidth` entre 19:52:12.226 e 19:52:12.730 (504 ms),
+ao abrir três janelas com `Pills`, no Explorer PID 19132. As quatro linhas
+correspondentes do tema usam `{{BtnW-6}}`; a captura
+`final-pills-new-buttons.png` mostrou recuperação visual. Fechar as janelas
+não produziu nova rajada. A observação total de dez minutos terminou às
+20:00:44 com o mesmo PID e nenhuma linha de erro adicional; o reset às
+20:01:22 restaurou 198 elementos. Isso não substitui a medição de handles
+XAML vivos nem o ensaio adversarial do reinício histórico.
+
+Esta é uma exceção restrita ao critério de zero `ERR`: registre separadamente
+as linhas `apply ... property '<MinWidth ou MaxWidth>' ... failed 0x80070057`
+associadas a `{{BtnW-6}}` durante o rebuild, a duração da rajada e a recuperação
+visual.
+Depois do layout, devem cessar os erros, as larguras devem acompanhar cada
+botão e o PID do Explorer deve permanecer igual. Erros em regime ou com outra
+causa continuam sendo falha do smoke. O contador `failed_styles` inclui a
+rajada; não o interprete como zero falhas.
+
+Não há guarda de valores negativos: a revisão final manteve a decisão de
+registrar essa transição sem introduzir uma lista geral de propriedades que
+rejeitam negativos (decisão 11 e retomada em
+`docs/superpowers/plano-3b-decisoes.md`).

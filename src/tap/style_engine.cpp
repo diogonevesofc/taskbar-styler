@@ -2,6 +2,7 @@
 #include <tap/style_engine.h>
 
 #include <atomic>
+#include <cstdint>
 #include <map>
 #include <optional>
 #include <string>
@@ -11,6 +12,7 @@
 #include <vector>
 
 #include <tap/blur_brush.h>
+#include <tap/dynamic_styles.h>
 #include <tap/log.h>
 #include <tap/property_setter.h>
 #include <tap/release_queue.h>
@@ -40,6 +42,7 @@ struct DependencyPropertyHash {
 
 // One property's value across visual states, in one VsgBucket (Task 6).
 struct PropertyState {
+    std::wstring name;
     // Value per visual state name; "" is the unconditional value. A null
     // IInspectable means "clear the property" (Prop:= with empty value).
     std::map<std::wstring, wf::IInspectable> values;
@@ -49,7 +52,7 @@ struct PropertyState {
     // thread's t_cache_theme holds a ref to for exactly as long as any of
     // these pointers can exist - see AdoptTheme, which OnElementAdded calls
     // unconditionally before any of them is stored.
-    std::map<std::wstring, const styler::PreparedStyle*> dynamic_styles;
+    DynamicStyleStates dynamic_styles;
     bool applied = false;           // We currently hold a custom value.
     wf::IInspectable original;      // Valid while `applied`.
     wf::IInspectable last_applied;  // ReadLocalValue after our last set.
@@ -80,6 +83,8 @@ struct VsgBucket {
 };
 
 struct ElementState {
+    // Distinguishes a replacement at the same id after reentrant XAML work.
+    uint64_t generation = 0;
     winrt::weak_ref<wux::FrameworkElement> element;
     // A list: the CurrentStateChanged handler captures the bucket index and
     // buckets are never reordered or erased individually.
@@ -92,6 +97,7 @@ struct ElementState {
 };
 
 thread_local std::unordered_map<ElementId, ElementState> t_state;
+thread_local uint64_t t_state_generation = 0;
 thread_local EngineStats t_stats;
 
 // Per-thread cache of resolved setters, keyed by the immutable PreparedStyle
@@ -386,8 +392,9 @@ void ApplyBucketForState(ElementId id, wux::FrameworkElement const& element,
             }
         } catch (winrt::hresult_error const& ex) {
             ++t_stats.failed_styles;
-            STYLER_LOG(LogLevel::Error, L"apply %llu state '%s' failed 0x%08X",
-                       static_cast<unsigned long long>(id), state_name.c_str(),
+            STYLER_LOG(LogLevel::Error, L"apply %llu property '%s' state '%s' failed 0x%08X",
+                       static_cast<unsigned long long>(id), prop.name.c_str(),
+                       state_name.c_str(),
                        static_cast<unsigned>(ex.code()));
         } catch (...) {
             ++t_stats.failed_styles;
@@ -494,30 +501,38 @@ void RestoreElement(ElementId id, ElementState& state) {
 }
 
 // Expands one dynamic style's text against the variables visible from
-// `chain`, resolves the result to a value, and records what it depended on.
+// `chain`, resolves the result to a value, and returns what it depended on.
 // Returns false when the style must be skipped this time round (an undefined
-// variable, a bad expression) - the dependencies are STILL registered, so the
-// style comes back on its own once something captures what it needs.
-bool ResolveDynamicValue(ElementId id, wux::DependencyProperty const& property,
-                         const styler::PreparedStyle& style,
+// variable, a bad expression or a rejected XAML value). Dependencies survive
+// all three cases; the caller publishes their union across effective states.
+bool ResolveDynamicValue(const styler::PreparedStyle& style,
                          const std::vector<void*>& chain,
                          std::wstring_view type, std::wstring_view reported,
-                         wf::IInspectable* out) {
-    std::vector<std::wstring> deps;
+                         wf::IInspectable* out,
+                         std::vector<std::wstring>* deps) {
     std::optional<std::wstring> text =
-        styler::ExpandStyleVariables(style.value, LookupFor(chain), &deps);
-    RegisterConsumer(id, property, deps);
+        styler::ExpandStyleVariables(style.value, LookupFor(chain), deps);
     if (!text) {
         STYLER_LOG(LogLevel::Debug, L"dynamic %s on %s: unresolved for now",
                    style.property.c_str(), std::wstring(type).c_str());
         return false;
     }
-    styler::PreparedStyle expanded = style;
-    expanded.value = std::move(*text);
-    expanded.dynamic = false;
-    ResolvedSetter setter = ResolveSetter(type, reported, expanded);
-    *out = setter.clear ? nullptr : setter.value;
-    return true;
+    try {
+        styler::PreparedStyle expanded = style;
+        expanded.value = std::move(*text);
+        expanded.dynamic = false;
+        ResolvedSetter setter = ResolveSetter(type, reported, expanded);
+        *out = setter.clear ? nullptr : setter.value;
+        return true;
+    } catch (winrt::hresult_error const& ex) {
+        ++t_stats.failed_styles;
+        STYLER_LOG(LogLevel::Error, L"dynamic %s on %s: 0x%08X",
+                   style.property.c_str(), std::wstring(type).c_str(),
+                   static_cast<unsigned>(ex.code()));
+    } catch (...) {
+        ++t_stats.failed_styles;
+    }
+    return false;
 }
 
 }  // namespace
@@ -559,6 +574,7 @@ void OnElementAdded(ElementId id, wux::FrameworkElement const& element,
     if (!state.buckets.empty()) {
         RestoreElement(id, state);  // Re-reported: start clean.
     }
+    const uint64_t generation = state.generation = ++t_state_generation;
     state.element = element;
 
     std::wstring type = view.TypeName();
@@ -633,8 +649,6 @@ void OnElementAdded(ElementId id, wux::FrameworkElement const& element,
                     // consumer could not be registered and the style would
                     // never come back.
                     property = ResolveProperty(type, reported, style.property);
-                    have_value = ResolveDynamicValue(id, property, style, chain,
-                                                     type, reported, &value);
                 } else {
                     const ResolvedSetter* setter =
                         CachedSetter(theme, style, type, reported);
@@ -644,6 +658,14 @@ void OnElementAdded(ElementId id, wux::FrameworkElement const& element,
                     have_value = true;
                 }
 
+                // Resolving XAML can reenter and replace this element/theme.
+                // Do not use the borrowed bucket after such a replacement.
+                auto current = t_state.find(id);
+                if (current == t_state.end() ||
+                    current->second.generation != generation ||
+                    t_cache_theme != theme) {
+                    return;
+                }
                 if (claimed.contains(property)) {
                     continue;  // An earlier (later-in-theme) match owns it.
                 }
@@ -662,8 +684,20 @@ void OnElementAdded(ElementId id, wux::FrameworkElement const& element,
                     continue;
                 }
                 PropertyState& prop = bucket.properties[property];
+                prop.name = style.property;
+                SelectDynamicStyle(prop.dynamic_styles, style);
                 if (style.dynamic) {
-                    prop.dynamic_styles[style.visual_state] = &style;
+                    std::vector<std::wstring> deps;
+                    have_value = ResolveDynamicValue(style, chain, type, reported,
+                                                     &value, &deps);
+                    current = t_state.find(id);
+                    if (current == t_state.end() ||
+                        current->second.generation != generation ||
+                        t_cache_theme != theme) {
+                        return;
+                    }
+                    prop.dynamic_styles[style.visual_state].dependencies =
+                        std::move(deps);
                 }
                 if (blur) {
                     // One brush per element: a XamlBlurBrush holds the
@@ -684,6 +718,8 @@ void OnElementAdded(ElementId id, wux::FrameworkElement const& element,
                 }
                 if (have_value) {
                     prop.values[style.visual_state] = value;
+                } else {
+                    prop.values.erase(style.visual_state);
                 }
             } catch (winrt::hresult_error const& ex) {
                 ++t_stats.failed_styles;
@@ -693,6 +729,16 @@ void OnElementAdded(ElementId id, wux::FrameworkElement const& element,
                            static_cast<unsigned>(ex.code()));
             } catch (...) {
                 ++t_stats.failed_styles;
+            }
+        }
+
+        // Publish once per winning property, after all of this rule's states
+        // and duplicate style lines have selected their effective templates.
+        for (const auto& property : claimed_by_match) {
+            auto pit = bucket.properties.find(property);
+            if (pit != bucket.properties.end()) {
+                RegisterConsumer(id, property,
+                                 DynamicStyleDependencies(pit->second.dynamic_styles));
             }
         }
 
@@ -782,10 +828,14 @@ void OnElementAdded(ElementId id, wux::FrameworkElement const& element,
 // Plano 3 crash hunt (element_registry.cpp:29-45), and this instance is the
 // one that actually fires on every resize.
 void ReapplyDynamicProperty(ElementId id, wux::DependencyProperty const& property) {
-    // Phase 1: locate and COPY everything the resolve step needs.
+    // Phase 1: locate and COPY everything the resolve step needs. A local
+    // owner pins the PreparedStyle pointers even if a nested reload clears
+    // t_cache_theme; phase 3 discards results for a replaced element/theme.
+    const auto theme = t_cache_theme;
     std::wstring type;
     std::wstring reported;
-    std::vector<std::pair<std::wstring, const styler::PreparedStyle*>> styles;
+    DynamicStyleStates styles;
+    uint64_t generation = 0;
     size_t bucket_index = 0;
     wux::FrameworkElement element{nullptr};
     {
@@ -794,6 +844,7 @@ void ReapplyDynamicProperty(ElementId id, wux::DependencyProperty const& propert
             return;
         }
         ElementState& state = it->second;
+        generation = state.generation;
         element = state.element.get();
         if (!element) {
             return;
@@ -807,9 +858,7 @@ void ReapplyDynamicProperty(ElementId id, wux::DependencyProperty const& propert
             }
             bucket_index = i;  // A property lives in exactly one bucket.
             found = true;
-            for (const auto& [visual_state, style] : pit->second.dynamic_styles) {
-                styles.emplace_back(visual_state, style);
-            }
+            styles = pit->second.dynamic_styles;
         }
         if (!found) {
             return;
@@ -822,10 +871,11 @@ void ReapplyDynamicProperty(ElementId id, wux::DependencyProperty const& propert
     const std::vector<void*> chain = AncestorChain(element);
     std::vector<std::pair<std::wstring, std::optional<wf::IInspectable>>> resolved;
     resolved.reserve(styles.size());
-    for (const auto& [visual_state, style] : styles) {
+    for (auto& [visual_state, dynamic] : styles) {
         wf::IInspectable value;
-        if (ResolveDynamicValue(id, property, *style, chain, type, reported,
-                                &value)) {
+        dynamic.dependencies.clear();
+        if (ResolveDynamicValue(*dynamic.style, chain, type, reported, &value,
+                                &dynamic.dependencies)) {
             resolved.emplace_back(visual_state, value);
         } else {
             // Unresolvable again: no value, so the entry is dropped below and
@@ -838,7 +888,8 @@ void ReapplyDynamicProperty(ElementId id, wux::DependencyProperty const& propert
     // Phase 3: re-find the state - a nested report may have torn it down or
     // rebuilt it while phase 2 was in flight - and apply.
     auto it = t_state.find(id);
-    if (it == t_state.end() || bucket_index >= it->second.buckets.size()) {
+    if (it == t_state.end() || it->second.generation != generation ||
+        t_cache_theme != theme || bucket_index >= it->second.buckets.size()) {
         return;
     }
     auto live = it->second.element.get();
@@ -850,6 +901,9 @@ void ReapplyDynamicProperty(ElementId id, wux::DependencyProperty const& propert
     if (pit == bucket.properties.end()) {
         return;
     }
+    pit->second.dynamic_styles = std::move(styles);
+    RegisterConsumer(id, property,
+                     DynamicStyleDependencies(pit->second.dynamic_styles));
     for (auto& [visual_state, value] : resolved) {
         if (value) {
             pit->second.values[visual_state] = *value;

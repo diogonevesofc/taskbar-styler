@@ -37,9 +37,13 @@ HRESULT DetachSource(wge::IGraphicsEffectSource const& source,
         *out = nullptr;
         return E_BOUNDS;
     }
-    winrt::com_ptr<::IUnknown> unknown =
-        source.as<::IUnknown>();  // AddRef'd copy we hand over.
-    *out = reinterpret_cast<awge::IGraphicsEffectSource*>(unknown.detach());
+    // Preserve the actual source interface, not the object's canonical
+    // IUnknown identity (which can have a different address/vtable).
+    // copy_to_abi requires a null destination, even if our caller's out
+    // parameter initially contains something else.
+    void* raw = nullptr;
+    winrt::copy_to_abi(source, raw);
+    *out = static_cast<awge::IGraphicsEffectSource*>(raw);
     return S_OK;
 }
 
@@ -124,16 +128,16 @@ wss::IRandomAccessStream CreateNoiseStream(float density) {
         reinterpret_cast<const uint8_t*>(&info_header) + sizeof(info_header)));
     writer.WriteBytes(pixels);
 
-    // This runs on a XAML UI thread, which is an STA: IAsyncOperation::get()
-    // blocks, and C++/WinRT asserts on a blocking wait from an STA in debug
-    // builds. Storing into an in-memory stream completes synchronously, so
-    // the operation is already finished here and the wait never happens -
-    // the guard makes that explicit instead of relying on it silently, and
-    // still waits in the (unobserved) case where it did not.
+    // In-memory writes normally finish inline. Never block this XAML STA if
+    // that changes: let the brush's existing error path choose its fallback.
+    // GetResults also propagates an already-completed Error/Canceled result,
+    // so a failed write cannot poison the per-thread bitmap cache.
     auto store = writer.StoreAsync();
     if (store.Status() == wf::AsyncStatus::Started) {
-        store.get();
+        store.Cancel();
+        winrt::throw_hresult(E_PENDING);
     }
+    store.GetResults();
     writer.DetachStream();
     stream.Seek(0);
 
