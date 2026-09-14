@@ -53,7 +53,7 @@ Cada afirmação técnica abaixo foi conferida contra o SDK, o corpus ou o probe
 | Grafo de efeitos do upstream, em ordem: `GaussianBlur(source="backdrop")` → (se `TintSaturation` ≠ 1) `ColorMatrix` de saturação → (se `TintLuminosityOpacity` > 0) `ColorMatrix` de luminosidade → (se `NoiseOpacity` > 0) `Composite(topo, ColorMatrix(Border(noise)))` → `Composite(topo, Flood(tint))`. Depois `factory.CreateBrush()` e `SetSourceParameter(L"backdrop", compositor.CreateBackdropBrush())`. Coeficientes de luma Rec. 709 (0.2126 / 0.7152 / 0.0722). | `vendor:13682-13800`. |
 | O ruído é um BMP 256×256 gerado proceduralmente (`std::mt19937` semeado com 0, LUT de `pow(i/255, 1/density)`), servido por `InMemoryRandomAccessStream` e cacheado por densidade em `thread_local`. | `vendor:12412-12470`. |
 | Tint por `{ThemeResource Key}`: o upstream cria `<SolidColorBrush Color="{ThemeResource Key}"/>` por `XamlReader::Load`, insere-o em `element.Resources()` com uma chave única (`__WhBlurProxy_N`), lê `proxy.Color()` e observa `RegisterPropertyChangedCallback(SolidColorBrush::ColorProperty())` para refazer o brush quando o tema claro/escuro muda. O destrutor remove a chave. | `vendor:13382-13470`, `:13645-13665`, `:13818-13830`. |
-| `ShouldUseFallback()` do upstream **retorna `false` de saída** quando não há `FallbackColor` nem `FallbackColor="{ThemeResource …}"`; só então consulta `HKLM\SYSTEM\CurrentControlSet\Control\Power\EnergySaverState` e `UISettings::AdvancedEffectsEnabled`. | `vendor:13831-13842`. |
+| `ShouldUseFallback()` do upstream **retorna `false` de saída** quando não há `FallbackColor` nem `FallbackColor="{ThemeResource …}"`; só então consulta `HKLM\SYSTEM\CurrentControlSet\Control\Power\EnergySaverState` e `UISettings::AdvancedEffectsEnabled`. | `vendor:13843-13854`. |
 | **Corpus, blur:** 272 tags `<WindhawkBlur>` (231 inline em estilos, 41 dentro de constantes, **0** em `resourceVariables`), 69 textos distintos, 32 temas. Atributos: `BlurAmount` 272 (271 numéricos + 1 `$taskbarBlurIncreace`), `TintColor` 267 (233 `#hex`, 33 `{ThemeResource …}`, 1 `$aeroColor`), `TintOpacity` 40, `TintSaturation` 10, `TintLuminosityOpacity` 6, `NoiseOpacity` 5, `NoiseDensity` 5. **`FallbackColor`: zero ocorrências.** Ruído em 4 temas (`LayerMicaUI` e os três `Luminosity_*`). | `python` sobre `themes/*.json`, 2026-09-14. |
 | **Corpus, variáveis:** 29 capturas `Prop=>Var` e **168** referências `{{…}}` (o "108" do Plano 3 contava estilos, não referências), nos **mesmos 14 temas**. 48 referências são a forma pura `{{Var}}`; 120 aparecem misturadas com texto (`Padding := {{a}},{{b}},{{c}},{{d}}`). Zero `{{…}}` em `target`. Duas em constantes, ambas de `Pills` (`{{__unset}}`). Propriedades capturadas: `ActualWidth` 21, `ActualHeight` 6, `Height` 2. **Nenhum tema captura o mesmo nome duas vezes.** | `python` sobre `themes/*.json`, 2026-09-14. |
 | Operadores realmente usados dentro de `{{…}}` no corpus: `-` 61, `*` 28, `max(` 22, `+` 20, `min(` 19, `/` 18, `?:` 12, `>` 12, literal de crase 8. **Não usados:** `==`, `!=`, `<`, `<=`, `>=`. | mesma medição. |
@@ -71,7 +71,7 @@ Cada afirmação técnica abaixo foi conferida contra o SDK, o corpus ou o probe
 
 ## Fora deste plano
 
-- **Troca automática para o brush de fallback** quando a economia de energia liga ou "Efeitos de transparência" é desligado (`vendor:13831-13905`, incluindo o watch de `RegNotifyChangeKeyValue` sobre a chave `Power`). Motivo medido: `ShouldUseFallback()` do upstream retorna `false` de saída sem `FallbackColor`, e **nenhuma das 272 tags do corpus tem `FallbackColor`** — o caminho inteiro é inalcançável para os 55 temas. O atributo continua sendo **parseado** (Task 2) e usado como cor do brush quando a criação do efeito falha; só o chaveamento dinâmico por energia/transparência fica de fora.
+- **Troca automática para o brush de fallback** quando a economia de energia liga ou "Efeitos de transparência" é desligado (`vendor:13843-13905`, incluindo o watch de `RegNotifyChangeKeyValue` sobre a chave `Power`). Motivo medido: `ShouldUseFallback()` do upstream retorna `false` de saída sem `FallbackColor`, e **nenhuma das 272 tags do corpus tem `FallbackColor`** — o caminho inteiro é inalcançável para os 55 temas. O atributo continua sendo **parseado** (Task 2) e usado como cor do brush quando a criação do efeito falha; só o chaveamento dinâmico por energia/transparência fica de fora.
 - **Escopo por `XamlRoot` do estado de variáveis** (`vendor:12054-12100`). Aqui o estado é `thread_local`, e cada superfície XAML da taskbar já roda na própria thread (spec §6.1). Decisão e custo registrados na Task 6.
 - **Retry de imagem remota** (`TrackIfRemoteImageSource`) e **click-through** — fora do escopo do produto (spec §2). A referência `{{clickThroughTaskbar}}` que existe em um estilo do corpus resolve como variável indefinida e pula aquele estilo, que é o comportamento correto aqui.
 - **Contador de handles VIVOS da spec §7.2** e o **deadlock de `SetSite(nullptr)`** (`UnregisterWaitEx(INVALID_HANDLE_VALUE)` + ramo `!site` ignorando `Deferred`) — herdados pelo **Plano 4** segundo a revisão final do Plano 3.
@@ -115,47 +115,66 @@ Duas dívidas herdadas, ambas de uma linha de risco e nenhuma de escopo: `RunOnW
 
 - [ ] **Step 1: `SendMessageTimeoutW`**
 
-Em `src/tap/thread_init.cpp`, dentro de `RunOnWindowThread`, trocar a chamada e o `return`:
+Em `src/tap/thread_init.cpp`, dentro de `RunOnWindowThread`, três mudanças:
+
+1. Remover a linha `RunParam rp{proc, param, hWnd};` (hoje antes do `SetWindowsHookExW`).
+2. Logo depois de `if (!hook) { return false; }`, alocar no heap:
 
 ```cpp
-    if (!hook) {
+    // Heap, not stack: see the timeout branch below. nothrow because this
+    // runs under SetSite and the reload pool thread, neither of which may
+    // let an exception out.
+    auto* rp = new (std::nothrow) RunParam{proc, param, hWnd};
+    if (!rp) {
+        UnhookWindowsHookEx(hook);
         return false;
     }
+```
 
+3. Trocar a chamada `SendMessageW(...)` e o `UnhookWindowsHookEx(hook); return true;` por:
+
+```cpp
     // SendMessageW without a timeout parks this thread forever when the
     // target UI thread is wedged - and the caller here is often the reload
     // pool thread or SetSite, neither of which may hang the shell. The
     // timeout is generous (a XAML host busy with a layout pass legitimately
-    // takes a while) but finite, and SMTO_ABORTIFHUNG returns immediately
-    // when the window is already marked not-responding instead of waiting
-    // out the full budget. Inherited from the Plano 2 ledger
-    // ("SendMessageW sem timeout no thread_init.cpp") and repeated by the
-    // Plano 3 final review.
+    // takes a while) but finite, and SMTO_ABORTIFHUNG returns at once when
+    // the window is already marked not-responding instead of waiting out
+    // the full budget. Inherited from the Plano 2 ledger ("SendMessageW sem
+    // timeout no thread_init.cpp") and repeated by the Plano 3 final review.
     constexpr UINT kRunTimeoutMs = 5000;
     DWORD_PTR result = 0;
     LRESULT sent = SendMessageTimeoutW(hWnd, RunMessage(), 0,
-                                       reinterpret_cast<LPARAM>(&rp),
+                                       reinterpret_cast<LPARAM>(rp),
                                        SMTO_ABORTIFHUNG, kRunTimeoutMs,
                                        &result);
     UnhookWindowsHookEx(hook);
 
     if (!sent) {
-        // `rp` lives on this stack frame and the hook is gone, so nothing can
-        // reach it any more - but the proc may or may not have run. Callers
-        // treat false as "not dispatched" and log; none of them retries in a
-        // loop (spec section 6.5).
+        // Timed out or failed. `rp` is deliberately leaked: the message may
+        // still be sitting in the target's queue, and a hook procedure that
+        // already started on that thread keeps running after
+        // UnhookWindowsHookEx returns - either one can still read `rp`. One
+        // RunParam per timeout is the price of never freeing memory another
+        // thread may be dereferencing inside explorer. Callers treat false
+        // as "not dispatched" and log; none of them retries in a loop (spec
+        // section 6.5).
         STYLER_LOG(LogLevel::Error,
                    L"RunOnWindowThread timed out or failed for hwnd %p "
                    L"(thread %lu, error %lu)",
                    hWnd, thread_id, GetLastError());
         return false;
     }
+    // A successful synchronous send returns only after the target thread
+    // finished dispatching the message, hooks included: nothing can reach
+    // `rp` any more.
+    delete rp;
     return true;
 ```
 
-Remover as duas linhas antigas (`SendMessageW(...)` e o `UnhookWindowsHookEx(hook); return true;`).
+`<new>` já vem por `<memory>`/`<vector>`; se o arquivo não incluir nenhum dos dois, acrescentar `#include <new>`.
 
-> **Atenção ao tempo de vida:** `rp` está na pilha desta função. Com `SendMessageTimeoutW` e `SMTO_ABORTIFHUNG`, um timeout devolve o controle **enquanto a mensagem pode ainda estar enfileirada**. `UnhookWindowsHookEx` acontece antes do `return`, e é o hook que entrega o ponteiro: depois de removê-lo, nenhum `WH_CALLWNDPROC` novo o vê. Uma janela de corrida teórica sobra (um `CallWndProc` já em execução na outra thread), e é aceita: a alternativa seria alocar `RunParam` no heap e nunca poder liberá-lo. Documentar exatamente isso no comentário acima já feito.
+> **Por que heap e não pilha (ruling do pre-flight do Plano 3b):** com `SendMessageTimeoutW`, um timeout devolve o controle **enquanto a mensagem pode ainda estar enfileirada**, e `UnhookWindowsHookEx` não interrompe um hook que já começou na outra thread (documentado: "the hook procedure can be in the state of being called by another thread even after UnhookWindowsHookEx returns"). Um `RunParam` na pilha seria lido depois de destruído — chamada por ponteiro de função lixo dentro do explorer. Os quatro chamadores atuais passam `param = nullptr` e o hook só lê `p` na entrada, o que torna a janela minúscula, não inexistente. O custo do heap é um vazamento de `sizeof(RunParam)` por timeout, e cada timeout já sai como `Error` no log.
 
 - [ ] **Step 2: `NumChildren` chega ao `Reported`**
 
@@ -1677,7 +1696,7 @@ namespace styler::tap {
 // Deliberately NOT ported: the energy-saver / "transparency effects off"
 // switch to a flat fallback brush. Upstream's own ShouldUseFallback returns
 // false outright when the markup declares no FallbackColor
-// (vendor:13831-13842), and no `<WindhawkBlur>` in the 55 shipped themes
+// (vendor:13843-13854), and no `<WindhawkBlur>` in the 55 shipped themes
 // declares one (272 tags measured) - so that whole path, including its
 // RegNotifyChangeKeyValue watch on the Power key, is unreachable for every
 // theme this project ships. `FallbackColor` is still parsed and is still the
@@ -3947,7 +3966,7 @@ void ReapplyCustomizationsForSubtree(wux::FrameworkElement const& element,
 }
 ```
 
-`FindElementId` já existe em `src/tap/element_registry.h` (o Plano 3 o usa na fila de liberação); se a assinatura for por handle e não por elemento, acrescentar o overload que recebe o `FrameworkElement` e converte com `winrt::get_abi`.
+`FindElementId(InstanceHandle)` já existe em `src/tap/element_registry.h`. Acrescentar o overload `ElementId FindElementId(wf::IInspectable const& element)` que obtém o handle **exatamente como o upstream** (`HandleFromInspectable`, `vendor:10961-10965`): `QueryInterface` por `IInspectable` no `winrt::get_abi(element)` e o ponteiro devolvido, reinterpretado como `InstanceHandle`, é a chave em `t_ids` — validada pela `weak_ref` da entrada como toda consulta ao registro. **Não** usar `winrt::get_abi(element)` direto: esse é o ponteiro da interface `IFrameworkElement`, não a identidade `IInspectable` que a diagnostics reporta como handle.
 
 O gatilho, registrado em `OnElementAdded` para todo elemento cujo id o motor passou a acompanhar — o spike diz qual dos dois blocos fica:
 
