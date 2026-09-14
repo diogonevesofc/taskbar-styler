@@ -2817,12 +2817,17 @@ bool IsModifying() {
     return t_modifying;
 }
 
-ModifyingGuard::ModifyingGuard() {
+// Shipped with a prev_ member (see the guard's declaration), restoring the
+// PREVIOUS value here rather than hard-clearing to false: Task 6's
+// CurrentStateChanged can fire synchronously while an outer SetValue is
+// still in flight, and a nested guard clearing the flag out from under an
+// outer one would reopen the exact bug this guard exists to close.
+ModifyingGuard::ModifyingGuard() : prev_(t_modifying) {
     t_modifying = true;
 }
 
 ModifyingGuard::~ModifyingGuard() {
-    t_modifying = false;
+    t_modifying = prev_;
 }
 
 }  // namespace styler::tap
@@ -3471,9 +3476,18 @@ struct PropertyState {
 };
 
 struct VsgBucket {
-    winrt::weak_ref<wux::VisualStateGroup> group;  // Empty: unconditional.
+    // Shipped as a STRONG ref, not weak_ref as drafted above: measured (Task
+    // 6 smoke test) that a weak_ref here never resolves back - group.get()
+    // came back null every time OnElementAdded's second pass reached it a
+    // few lines later, so RegisterStateWatch never subscribed and
+    // CurrentStateChanged never fired. Dropped on all four teardown paths
+    // (OnElementRemoved, the re-report branch, RestoreAllOnThisThread,
+    // t_state's own destruction at thread exit), so it does not pin the
+    // element.
+    wux::VisualStateGroup group{nullptr};  // Empty: unconditional.
     long long state_changed_token = 0;
-    std::unordered_map<wux::DependencyProperty, PropertyState> properties;
+    std::unordered_map<wux::DependencyProperty, PropertyState, DependencyPropertyHash>
+        properties;
 };
 
 struct ElementState {
@@ -3761,16 +3775,32 @@ Em `OnElementAdded`, o laço de estilos passa a distribuir por balde em vez de a
         }
         VsgBucket& bucket = state.buckets[bucket_index];
 
+        // Shipped with a per-MATCH claim set (claimed_by_match below),
+        // merged into `claimed` only once the match finishes - not the bare
+        // `claimed.insert(...)` per style line drafted above. That version
+        // would make a single rule's own Background@ActiveNormal=... and
+        // Background@ActivePointerOver=... fight each other for the same
+        // property, since the SECOND style line would find the property
+        // already claimed by the rule's OWN first line. Upstream's
+        // propertiesAdded (vendor:15933-16031) inserts once per
+        // (rule, property) AFTER a rule's own states are merged into one
+        // per-property entry - never once per style line - which is what
+        // the per-match set restores. A group-less Prop@State is claimed
+        // too (vendor:16022 inserts before group resolution is even
+        // consulted), just before it is found inert below.
+        std::unordered_set<wux::DependencyProperty, DependencyPropertyHash>
+            claimed_by_match;
         for (const styler::PreparedStyle& style : match.rule->styles) {
-            if (!style.visual_state.empty() && !group) {
-                STYLER_LOG(LogLevel::Debug, L"rule %zu: %s@%s without a group, inert",
-                           match.rule->source_index, style.property.c_str(),
-                           style.visual_state.c_str());
-                continue;
-            }
             try {
-                const ResolvedSetter* setter = CachedSetter(*theme, style, type, reported);
-                if (!claimed.insert(setter->property).second) {
+                const ResolvedSetter* setter = CachedSetter(theme, style, type, reported);
+                if (claimed.contains(setter->property)) {
+                    continue;  // An earlier (later-in-theme) match owns it.
+                }
+                claimed_by_match.insert(setter->property);
+                if (!style.visual_state.empty() && !group) {
+                    STYLER_LOG(LogLevel::Debug, L"rule %zu: %s@%s without a group, inert",
+                               match.rule->source_index, style.property.c_str(),
+                               style.visual_state.c_str());
                     continue;
                 }
                 PropertyState& prop = bucket.properties[setter->property];
@@ -3785,6 +3815,7 @@ Em `OnElementAdded`, o laço de estilos passa a distribuir por balde em vez de a
                 ++t_stats.failed_styles;
             }
         }
+        claimed.insert(claimed_by_match.begin(), claimed_by_match.end());
     }
 
     // Drop empty buckets, then apply each for its current state and watch.

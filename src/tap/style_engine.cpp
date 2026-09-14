@@ -54,11 +54,14 @@ struct VsgBucket {
     // never resolves back - group.get() came back null every time by the
     // time OnElementAdded's second pass (a few lines later, same call)
     // reached it, so RegisterStateWatch never ran and CurrentStateChanged
-    // never fired. VisualStateGroup does not reference its owning element
-    // back (RestoreElement/OnElementRemoved drop this the moment the
-    // element itself is reported gone, same as every other per-element
-    // field here), so holding it strongly does not extend the element's
-    // lifetime.
+    // never fired. This does not pin the element indefinitely: the strong
+    // ref is dropped on all four paths that tear a bucket down -
+    // OnElementRemoved (a real removal), OnElementAdded's re-report branch
+    // (RestoreElement, before rebuilding fresh buckets), RestoreAllOnThisThread
+    // (theme change or session teardown, which calls OnElementRemoved for
+    // every tracked id), and plain destruction of the thread_local t_state
+    // map at thread exit, which releases every ElementState - buckets
+    // included - without going through RestoreElement at all.
     wux::VisualStateGroup group{nullptr};  // Empty: unconditional.
     long long state_changed_token = 0;
     std::unordered_map<wux::DependencyProperty, PropertyState, DependencyPropertyHash>
@@ -316,7 +319,17 @@ void Unapply(wux::FrameworkElement const& element,
 }
 
 // Re-evaluates one bucket against `state_name`: apply, re-apply or restore
-// each property. Runs on state change and on first apply.
+// each property. Runs on state change and on first apply. Holds `bucket` -
+// a reference into some ElementState's `buckets` vector, itself a value
+// inside the thread_local t_state map - across every SetOrClearValue call
+// below. Safe against a nested report for a DIFFERENT id arriving on this
+// thread while one of those calls is in flight: t_state and bucket.properties
+// are unordered_maps, and inserting or erasing a different key never
+// invalidates a reference to this one. NOT safe against a nested report for
+// THIS SAME id, which could call RestoreElement (clearing or reallocating
+// the very buckets vector `bucket` points into) before this call returns -
+// same class of risk as element_registry.cpp:29-45 (Entry& held across a
+// call that can re-enter and mutate the map), and present upstream too.
 void ApplyBucketForState(ElementId id, wux::FrameworkElement const& element,
                          VsgBucket& bucket, const std::wstring& state_name,
                          bool initial) {
@@ -524,18 +537,25 @@ void OnElementAdded(ElementId id, wux::FrameworkElement const& element,
         std::unordered_set<wux::DependencyProperty, DependencyPropertyHash>
             claimed_by_match;
         for (const styler::PreparedStyle& style : match.rule->styles) {
-            if (!style.visual_state.empty() && !group) {
-                STYLER_LOG(LogLevel::Debug, L"rule %zu: %s@%s without a group, inert",
-                           match.rule->source_index, style.property.c_str(),
-                           style.visual_state.c_str());
-                continue;
-            }
             try {
                 const ResolvedSetter* setter = CachedSetter(theme, style, type, reported);
                 if (claimed.contains(setter->property)) {
                     continue;  // An earlier (later-in-theme) match owns it.
                 }
+                // Claimed regardless of whether it turns out inert just
+                // below - fidelity with upstream's propertiesAdded
+                // (vendor:16022), which inserts a rule's property before
+                // group resolution is even consulted. So a group-less
+                // Prop@State still blocks an EARLIER rule's unconditional
+                // Prop=... on that same property from ever applying, even
+                // though this rule's own value never activates.
                 claimed_by_match.insert(setter->property);
+                if (!style.visual_state.empty() && !group) {
+                    STYLER_LOG(LogLevel::Debug, L"rule %zu: %s@%s without a group, inert",
+                               match.rule->source_index, style.property.c_str(),
+                               style.visual_state.c_str());
+                    continue;
+                }
                 PropertyState& prop = bucket.properties[setter->property];
                 prop.values[style.visual_state] = setter->clear ? nullptr : setter->value;
             } catch (winrt::hresult_error const& ex) {
@@ -562,7 +582,24 @@ void OnElementAdded(ElementId id, wux::FrameworkElement const& element,
     for (size_t i = 0; i < state.buckets.size(); ++i) {
         VsgBucket& bucket = state.buckets[i];
         auto group = bucket.group;
-        ApplyBucketForState(id, element, bucket, CurrentStateName(group), true);
+        // CurrentStateName(group) - specifically group.CurrentState() - is a
+        // WinRT call evaluated as an argument here, outside ApplyBucketForState's
+        // own per-property try/catch: left bare, a throw would unwind straight
+        // out of OnElementAdded, skipping the property/state watches for this
+        // bucket AND every bucket after it, half-wiring the element (some
+        // buckets applied and watched, the rest with neither). Wrapping just
+        // this call keeps the watches below reachable for this bucket, and
+        // lets the loop move on to the next one.
+        try {
+            ApplyBucketForState(id, element, bucket, CurrentStateName(group), true);
+        } catch (winrt::hresult_error const& ex) {
+            ++t_stats.failed_styles;
+            STYLER_LOG(LogLevel::Error, L"initial apply %llu failed 0x%08X",
+                       static_cast<unsigned long long>(id),
+                       static_cast<unsigned>(ex.code()));
+        } catch (...) {
+            ++t_stats.failed_styles;
+        }
         for (auto& [property, prop] : bucket.properties) {
             try {
                 RegisterPropertyWatch(id, i, element, property, prop);
