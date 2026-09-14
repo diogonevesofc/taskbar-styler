@@ -2,7 +2,10 @@
 #include <tap/style_engine.h>
 
 #include <atomic>
+#include <map>
 #include <optional>
+#include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -16,14 +19,6 @@ namespace {
 // Heap-leaked like g_session: no namespace-scope destructor at detach.
 auto* const g_theme =
     new std::atomic<std::shared_ptr<const styler::ResolvedTheme>>{nullptr};
-
-// One customized property on one element.
-struct PropertyState {
-    wf::IInspectable original;      // What ReadLocalValue gave before us.
-    wf::IInspectable custom;        // What we set (null when clearing).
-    wf::IInspectable last_applied;  // ReadLocalValue right after our set.
-    long long changed_token = 0;    // RegisterPropertyChangedCallback.
-};
 
 // winrt/Windows.UI.Xaml.2.h specializes std::hash<DependencyProperty> via
 // hash_base, whose operator() takes IUnknown const& - an implicit
@@ -39,10 +34,42 @@ struct DependencyPropertyHash {
     }
 };
 
-struct ElementState {
-    winrt::weak_ref<wux::FrameworkElement> element;
+// One property's value across visual states, in one VsgBucket (Task 6).
+struct PropertyState {
+    // Value per visual state name; "" is the unconditional value. A null
+    // IInspectable means "clear the property" (Prop:= with empty value).
+    std::map<std::wstring, wf::IInspectable> values;
+    bool applied = false;           // We currently hold a custom value.
+    wf::IInspectable original;      // Valid while `applied`.
+    wf::IInspectable last_applied;  // ReadLocalValue after our last set.
+    long long changed_token = 0;
+};
+
+// Every style that applies to an element is grouped into one bucket per
+// visual-state group its match named: the group's CurrentStateChanged
+// re-evaluates every property in its bucket at once. Styles with no @Group
+// live in the one bucket whose `group` is empty.
+struct VsgBucket {
+    // Strong, not weak: measured (Task 6 smoke test) that a weak_ref here
+    // never resolves back - group.get() came back null every time by the
+    // time OnElementAdded's second pass (a few lines later, same call)
+    // reached it, so RegisterStateWatch never ran and CurrentStateChanged
+    // never fired. VisualStateGroup does not reference its owning element
+    // back (RestoreElement/OnElementRemoved drop this the moment the
+    // element itself is reported gone, same as every other per-element
+    // field here), so holding it strongly does not extend the element's
+    // lifetime.
+    wux::VisualStateGroup group{nullptr};  // Empty: unconditional.
+    long long state_changed_token = 0;
     std::unordered_map<wux::DependencyProperty, PropertyState, DependencyPropertyHash>
         properties;
+};
+
+struct ElementState {
+    winrt::weak_ref<wux::FrameworkElement> element;
+    // A list: the CurrentStateChanged handler captures the bucket index and
+    // buckets are never reordered or erased individually.
+    std::vector<VsgBucket> buckets;
 };
 
 thread_local std::unordered_map<ElementId, ElementState> t_state;
@@ -124,7 +151,7 @@ public:
                 e.Type() == wf::PropertyType::Boolean) {
                 return a.GetBoolean() == e.GetBoolean();
             }
-            // Numbers and enums: compare as double; enums box as int32.
+            // Numbers and enums: compare as double.
             auto as_number = [](wf::IPropertyValue const& v) -> std::optional<double> {
                 switch (v.Type()) {
                     case wf::PropertyType::Double: return v.GetDouble();
@@ -138,10 +165,29 @@ public:
                     case wf::PropertyType::UInt8: return v.GetUInt8();
                     default: break;
                 }
-                if (auto i = v.try_as<int32_t>()) {  // Enums.
-                    return *i;
+                // Enums box as OtherType, not Int32: a boxed WinRT enum is
+                // IReference<TEnum>, a distinct parameterized interface (its
+                // own IID, derived from TEnum's signature) from
+                // IReference<int32_t> - the old code's try_as<int32_t> QI'd
+                // for the latter and could never match the former. Confirmed
+                // dead with a live [Prop=EnumValue] selector: the class name
+                // read back off the local value was
+                // Windows.Foundation.IReference`1<Windows.UI.Xaml.Whatever>,
+                // and try_as<int32_t> never matched it, so the filter never
+                // fired. GetInt32()/GetUInt32 called directly on the
+                // IPropertyValue itself, by contrast, DO retrieve an enum's
+                // underlying integer despite Type() reporting OtherType -
+                // confirmed with the same selector once switched over. Most
+                // XAML enums are Int32-backed, a few (flags-style) UInt32.
+                try {
+                    return v.GetInt32();
+                } catch (winrt::hresult_error const&) {
                 }
-                return std::nullopt;
+                try {
+                    return v.GetUInt32();
+                } catch (winrt::hresult_error const&) {
+                    return std::nullopt;
+                }
             };
             auto an = as_number(a);
             auto en = as_number(e);
@@ -177,92 +223,222 @@ const ResolvedSetter* CachedSetter(
     return &t_setter_cache.emplace(&style, std::move(resolved)).first->second;
 }
 
-void RestoreElement(ElementId id, ElementState& state) {
-    auto element = state.element.get();
-    for (auto& [property, prop] : state.properties) {
-        if (!element) {
-            break;
-        }
-        try {
-            if (prop.changed_token) {
-                element.UnregisterPropertyChangedCallback(property, prop.changed_token);
-            }
-            // Always calls through, even when `original` is null (never had
-            // a local value before us): SetOrClearValue is also what
-            // cancels a still-pending deferred BackgroundFill.Fill set
-            // (review minor), and that must happen regardless of whether
-            // there is anything to restore to. UnsetValue() there means
-            // ClearValue - the correct outcome when there was no original.
-            ModifyingGuard guard;
-            SetOrClearValue(element, property,
-                            prop.original ? prop.original
-                                          : wux::DependencyProperty::UnsetValue(),
-                            false);
-        } catch (winrt::hresult_error const& ex) {
-            STYLER_LOG(LogLevel::Error, L"restore %llu failed 0x%08X",
-                       static_cast<unsigned long long>(id),
-                       static_cast<unsigned>(ex.code()));
-        } catch (...) {
+// Two elements whose group list reports one item that crashes on access
+// (upstream vendor:15683-15720). Skip them outright.
+wux::VisualStateGroup GetVisualStateGroup(wux::FrameworkElement const& element,
+                                          std::wstring_view name) {
+    auto cls = winrt::get_class_name(element);
+    auto parent_is = [&](std::wstring_view parent_cls) {
+        auto parent = wuxm::VisualTreeHelper::GetParent(element)
+                          .try_as<wux::FrameworkElement>();
+        return parent && winrt::get_class_name(parent) == parent_cls;
+    };
+    if (cls == L"Taskbar.TaskListButtonPanel" &&
+        parent_is(L"Taskbar.SearchBoxLaunchListButton")) {
+        return nullptr;
+    }
+    if (cls == L"SearchUx.SearchUI.SearchButtonRootGrid" &&
+        parent_is(L"SearchUx.SearchUI.SearchPillButton")) {
+        return nullptr;
+    }
+    for (auto const& group : wux::VisualStateManager::GetVisualStateGroups(element)) {
+        if (group.Name() == name) {
+            return group;
         }
     }
-    state.properties.clear();
+    return nullptr;
 }
 
-void ApplyProperty(ElementId id, wux::FrameworkElement const& element,
-                   ElementState& state, wux::DependencyProperty const& property,
-                   wf::IInspectable const& custom_or_unset) {
-    PropertyState prop;
-    prop.original = ReadLocalValueWithWorkaround(element, property);
-    prop.custom = custom_or_unset;
-    // The brief's text set/cleared t_modifying by hand around this call
-    // with no try/catch at all - if SetOrClearValue threw (it can; it is
-    // documented to), the flag was stuck true for the rest of the thread's
-    // life: every later PropertyChanged callback would return early at its
-    // own IsModifying() check forever, and the shell's own overwrites would
-    // never be captured as a new `original` again (review finding C1). The
-    // guard's destructor runs during unwinding too, so this cannot happen.
+// The element `depth` parents above `leaf`, or null if the tree is shorter.
+wux::FrameworkElement AncestorAt(wux::FrameworkElement leaf, int depth) {
+    wux::FrameworkElement cur = leaf;
+    for (int i = 0; i < depth && cur; ++i) {
+        cur = wuxm::VisualTreeHelper::GetParent(cur).try_as<wux::FrameworkElement>();
+    }
+    return cur;
+}
+
+std::wstring CurrentStateName(wux::VisualStateGroup const& group) {
+    if (!group) {
+        return L"";
+    }
+    auto state = group.CurrentState();
+    return state ? std::wstring(state.Name()) : L"";
+}
+
+// Value for `state`, else the unconditional one. Returns whether one exists.
+bool PickValue(const PropertyState& prop, const std::wstring& state,
+               wf::IInspectable* out) {
+    auto it = prop.values.find(state);
+    if (it == prop.values.end() && !state.empty()) {
+        it = prop.values.find(L"");
+    }
+    if (it == prop.values.end()) {
+        return false;
+    }
+    *out = it->second;
+    return true;
+}
+
+wf::IInspectable OrUnset(wf::IInspectable const& v) {
+    return v ? v : wux::DependencyProperty::UnsetValue();
+}
+
+// Applies `value`, capturing the pre-existing local value the first time this
+// property is customized. `initial` forwards to SetOrClearValue's own
+// BackgroundFill.Fill deferral.
+void SetCustom(wux::FrameworkElement const& element,
+               wux::DependencyProperty const& property, PropertyState& prop,
+               wf::IInspectable const& value, bool initial) {
+    if (!prop.applied) {
+        prop.original = ReadLocalValueWithWorkaround(element, property);
+        prop.applied = true;
+    }
     {
         ModifyingGuard guard;
-        SetOrClearValue(element, property, custom_or_unset, true);
+        SetOrClearValue(element, property, OrUnset(value), initial);
     }
     prop.last_applied = ReadLocalValueWithWorkaround(element, property);
+}
 
-    // Something else (a Setter, a template) overwriting our value gets our
-    // value back - and becomes the new original, so restore returns to what
-    // the shell last wanted, not to what it wanted before we arrived.
+// Restores the pre-existing value captured by SetCustom, if any is applied.
+void Unapply(wux::FrameworkElement const& element,
+             wux::DependencyProperty const& property, PropertyState& prop) {
+    if (!prop.applied) {
+        return;
+    }
+    {
+        ModifyingGuard guard;
+        SetOrClearValue(element, property, OrUnset(prop.original), false);
+    }
+    prop.applied = false;
+    prop.original = nullptr;
+}
+
+// Re-evaluates one bucket against `state_name`: apply, re-apply or restore
+// each property. Runs on state change and on first apply.
+void ApplyBucketForState(ElementId id, wux::FrameworkElement const& element,
+                         VsgBucket& bucket, const std::wstring& state_name,
+                         bool initial) {
+    if (!state_name.empty()) {
+        STYLER_LOG(LogLevel::Debug, L"apply %llu state '%s'",
+                   static_cast<unsigned long long>(id), state_name.c_str());
+    }
+    for (auto& [property, prop] : bucket.properties) {
+        try {
+            wf::IInspectable value;
+            if (PickValue(prop, state_name, &value)) {
+                SetCustom(element, property, prop, value, initial);
+            } else {
+                Unapply(element, property, prop);
+            }
+        } catch (winrt::hresult_error const& ex) {
+            ++t_stats.failed_styles;
+            STYLER_LOG(LogLevel::Error, L"apply %llu state '%s' failed 0x%08X",
+                       static_cast<unsigned long long>(id), state_name.c_str(),
+                       static_cast<unsigned>(ex.code()));
+        } catch (...) {
+            ++t_stats.failed_styles;
+        }
+    }
+}
+
+void RegisterPropertyWatch(ElementId id, size_t bucket_index,
+                           wux::FrameworkElement const& element,
+                           wux::DependencyProperty const& property,
+                           PropertyState& prop) {
     prop.changed_token = element.RegisterPropertyChangedCallback(
-        property, [id](wux::DependencyObject const& sender,
-                       wux::DependencyProperty const& changed) {
+        property, [id, bucket_index](wux::DependencyObject const& sender,
+                                     wux::DependencyProperty const& changed) {
             try {
                 if (IsModifying()) {
                     return;
                 }
                 auto it = t_state.find(id);
-                if (it == t_state.end()) {
+                if (it == t_state.end() || bucket_index >= it->second.buckets.size()) {
                     return;
                 }
-                auto pit = it->second.properties.find(changed);
-                if (pit == it->second.properties.end()) {
+                VsgBucket& bucket = it->second.buckets[bucket_index];
+                auto pit = bucket.properties.find(changed);
+                if (pit == bucket.properties.end() || !pit->second.applied) {
                     return;
                 }
                 PropertyState& p = pit->second;
                 wf::IInspectable local = ReadLocalValueWithWorkaround(sender, changed);
                 if (local != p.last_applied) {
-                    p.original = local;
+                    p.original = local;  // The shell changed its mind; honour it on restore.
+                }
+                wf::IInspectable value;
+                if (!PickValue(p, CurrentStateName(bucket.group), &value)) {
+                    return;
+                }
+                auto live = sender.try_as<wux::FrameworkElement>();
+                if (!live) {
+                    return;
                 }
                 {
                     ModifyingGuard guard;
-                    SetOrClearValue(sender, changed,
-                                    p.custom ? p.custom : wux::DependencyProperty::UnsetValue(),
-                                    false);
+                    SetOrClearValue(live, changed, OrUnset(value), false);
                 }
-                p.last_applied = ReadLocalValueWithWorkaround(sender, changed);
+                p.last_applied = ReadLocalValueWithWorkaround(live, changed);
             } catch (winrt::hresult_error const&) {
             } catch (...) {
             }
         });
-    state.properties[property] = std::move(prop);
-    ++t_stats.applied_properties;
+}
+
+void RegisterStateWatch(ElementId id, size_t bucket_index,
+                        wux::VisualStateGroup const& group, VsgBucket& bucket) {
+    bucket.state_changed_token = group.CurrentStateChanged(
+        [id, bucket_index](wf::IInspectable const&,
+                           wux::VisualStateChangedEventArgs const& e) {
+            try {
+                auto it = t_state.find(id);
+                if (it == t_state.end() || bucket_index >= it->second.buckets.size()) {
+                    return;
+                }
+                auto element = it->second.element.get();
+                if (!element) {
+                    return;
+                }
+                auto new_state = e.NewState();
+                std::wstring name = new_state ? std::wstring(new_state.Name()) : L"";
+                ApplyBucketForState(id, element, it->second.buckets[bucket_index],
+                                    name, false);
+            } catch (winrt::hresult_error const&) {
+            } catch (...) {
+            }
+        }).value;
+}
+
+void RestoreElement(ElementId id, ElementState& state) {
+    auto element = state.element.get();
+    for (VsgBucket& bucket : state.buckets) {
+        if (auto group = bucket.group; group && bucket.state_changed_token) {
+            try {
+                group.CurrentStateChanged(winrt::event_token{bucket.state_changed_token});
+            } catch (winrt::hresult_error const&) {
+            } catch (...) {
+            }
+        }
+        for (auto& [property, prop] : bucket.properties) {
+            if (!element) {
+                break;
+            }
+            try {
+                if (prop.changed_token) {
+                    element.UnregisterPropertyChangedCallback(property, prop.changed_token);
+                }
+                Unapply(element, property, prop);
+            } catch (winrt::hresult_error const& ex) {
+                STYLER_LOG(LogLevel::Error, L"restore %llu failed 0x%08X",
+                           static_cast<unsigned long long>(id),
+                           static_cast<unsigned>(ex.code()));
+            } catch (...) {
+            }
+        }
+    }
+    state.buckets.clear();
 }
 
 }  // namespace
@@ -289,7 +465,7 @@ void OnElementAdded(ElementId id, wux::FrameworkElement const& element,
     }
 
     ElementState& state = t_state[id];
-    if (!state.properties.empty()) {
+    if (!state.buckets.empty()) {
         RestoreElement(id, state);  // Re-reported: start clean.
     }
     state.element = element;
@@ -297,20 +473,71 @@ void OnElementAdded(ElementId id, wux::FrameworkElement const& element,
     std::wstring type = view.TypeName();
     std::unordered_set<wux::DependencyProperty, DependencyPropertyHash> claimed;
     for (const styler::RuleMatch& match : matches) {  // Last theme rule first.
+        // Resolve this match's bucket: the group on the ancestor the
+        // selector named, or the unconditional bucket.
+        wux::VisualStateGroup group{nullptr};
+        if (match.vsg) {
+            try {
+                if (auto owner = AncestorAt(element, match.vsg->ancestor_depth)) {
+                    group = GetVisualStateGroup(owner, match.vsg->name);
+                }
+            } catch (winrt::hresult_error const&) {
+            } catch (...) {
+            }
+            if (!group) {
+                STYLER_LOG(LogLevel::Debug, L"rule %zu: group %s not found on %s",
+                           match.rule->source_index, match.vsg->name.c_str(),
+                           type.c_str());
+            }
+        }
+        size_t bucket_index = state.buckets.size();
+        for (size_t i = 0; i < state.buckets.size(); ++i) {
+            auto existing = state.buckets[i].group;
+            if ((!group && !existing) || (group && existing == group)) {
+                bucket_index = i;
+                break;
+            }
+        }
+        if (bucket_index == state.buckets.size()) {
+            VsgBucket b;
+            if (group) {
+                b.group = group;
+            }
+            state.buckets.push_back(std::move(b));
+        }
+        VsgBucket& bucket = state.buckets[bucket_index];
+
+        // A property is claimed once across all buckets, by whichever MATCH
+        // reaches it first in FindMatchingRules order (last theme rule
+        // first) - fidelity with upstream's propertiesAdded (vendor
+        // :15933-16031), which is inserted once per (rule, property) AFTER a
+        // rule's own states are merged into one per-property entry, not once
+        // per style line. So every style below is let through the `claimed`
+        // check (a per-match set, folded into `claimed` once the match is
+        // done): a rule with both Background@ActiveNormal=... and
+        // Background@ActivePointerOver=... claims Background exactly once
+        // and keeps every one of its own states. A LATER rule's
+        // unconditional Background=... and an EARLIER rule's
+        // Background@State=... on the same property never coexist though:
+        // the later rule (seen first here) wins the property outright and
+        // the earlier one never applies. That is fidelity, not a bug.
+        std::unordered_set<wux::DependencyProperty, DependencyPropertyHash>
+            claimed_by_match;
         for (const styler::PreparedStyle& style : match.rule->styles) {
-            if (!style.visual_state.empty() || match.vsg) {
-                ++t_stats.deferred_visual_state_styles;  // Task 6.
+            if (!style.visual_state.empty() && !group) {
+                STYLER_LOG(LogLevel::Debug, L"rule %zu: %s@%s without a group, inert",
+                           match.rule->source_index, style.property.c_str(),
+                           style.visual_state.c_str());
                 continue;
             }
             try {
-                const ResolvedSetter* setter =
-                    CachedSetter(theme, style, type, reported);
-                if (!claimed.insert(setter->property).second) {
-                    continue;  // An earlier (later-in-theme) rule owns it.
+                const ResolvedSetter* setter = CachedSetter(theme, style, type, reported);
+                if (claimed.contains(setter->property)) {
+                    continue;  // An earlier (later-in-theme) match owns it.
                 }
-                ApplyProperty(id, element, state, setter->property,
-                              setter->clear ? wux::DependencyProperty::UnsetValue()
-                                            : setter->value);
+                claimed_by_match.insert(setter->property);
+                PropertyState& prop = bucket.properties[setter->property];
+                prop.values[style.visual_state] = setter->clear ? nullptr : setter->value;
             } catch (winrt::hresult_error const& ex) {
                 ++t_stats.failed_styles;
                 STYLER_LOG(LogLevel::Error, L"rule %zu %s=%s on %s: 0x%08X",
@@ -321,14 +548,45 @@ void OnElementAdded(ElementId id, wux::FrameworkElement const& element,
                 ++t_stats.failed_styles;
             }
         }
+        claimed.insert(claimed_by_match.begin(), claimed_by_match.end());
     }
-    if (state.properties.empty()) {
+
+    // Drop empty buckets, then apply each for its current state and watch.
+    std::erase_if(state.buckets, [](const VsgBucket& b) { return b.properties.empty(); });
+    if (state.buckets.empty()) {
         t_state.erase(id);
         return;
     }
+    size_t applied = 0;
+    size_t total_properties = 0;
+    for (size_t i = 0; i < state.buckets.size(); ++i) {
+        VsgBucket& bucket = state.buckets[i];
+        auto group = bucket.group;
+        ApplyBucketForState(id, element, bucket, CurrentStateName(group), true);
+        for (auto& [property, prop] : bucket.properties) {
+            try {
+                RegisterPropertyWatch(id, i, element, property, prop);
+            } catch (winrt::hresult_error const&) {
+            } catch (...) {
+            }
+            applied += prop.applied ? 1 : 0;
+        }
+        total_properties += bucket.properties.size();
+        if (group) {
+            try {
+                RegisterStateWatch(id, i, group, bucket);
+            } catch (winrt::hresult_error const& ex) {
+                STYLER_LOG(LogLevel::Error, L"CurrentStateChanged subscribe 0x%08X",
+                           static_cast<unsigned>(ex.code()));
+            } catch (...) {
+            }
+        }
+    }
+    t_stats.applied_properties += applied;
     ++t_stats.styled_elements;
-    STYLER_LOG(LogLevel::Debug, L"styled %s#%s: %zu properties", type.c_str(),
-               view.Name().c_str(), state.properties.size());
+    STYLER_LOG(LogLevel::Debug, L"styled %s#%s: %zu properties in %zu buckets",
+               type.c_str(), view.Name().c_str(), total_properties,
+               state.buckets.size());
 }
 
 void OnElementRemoved(ElementId id) {

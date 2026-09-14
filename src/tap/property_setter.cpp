@@ -211,12 +211,12 @@ bool IsModifying() {
     return t_modifying;
 }
 
-ModifyingGuard::ModifyingGuard() {
+ModifyingGuard::ModifyingGuard() : prev_(t_modifying) {
     t_modifying = true;
 }
 
 ModifyingGuard::~ModifyingGuard() {
-    t_modifying = false;
+    t_modifying = prev_;
 }
 
 }  // namespace styler::tap

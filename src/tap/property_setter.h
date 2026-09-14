@@ -58,17 +58,24 @@ void SetOrClearValue(wux::DependencyObject const& object,
 bool IsModifying();
 
 // RAII for the flag IsModifying() reads: true for the guard's lifetime,
-// false again on scope exit - including via an exception, which a
-// hand-paired `t_modifying = true; ...; t_modifying = false;` cannot
+// restoring the PREVIOUS value on scope exit - including via an exception,
+// which a hand-paired `t_modifying = true; ...; t_modifying = false;` cannot
 // guarantee (found in review: ApplyProperty's own call had no try/catch at
 // all, so a throw left the flag stuck true for the rest of the thread's
-// life).
+// life). Restoring the previous value rather than hard-clearing to false
+// also makes nested guards unwind correctly: a CurrentStateChanged handler
+// can fire synchronously while an outer SetValue is still in flight (Task
+// 6), so its own inner guard must not clear a flag an outer guard still
+// needs set.
 class ModifyingGuard {
 public:
     ModifyingGuard();
     ~ModifyingGuard();
     ModifyingGuard(const ModifyingGuard&) = delete;
     ModifyingGuard& operator=(const ModifyingGuard&) = delete;
+
+private:
+    bool prev_;
 };
 
 }  // namespace styler::tap
