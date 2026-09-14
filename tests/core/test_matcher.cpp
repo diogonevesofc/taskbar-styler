@@ -227,7 +227,14 @@ TEST_CASE("PrepareTheme expands types, applies constants, rewrites blur, skips t
     CHECK_FALSE(rule.styles[1].is_xaml);
     CHECK(prepared.skipped_captures == 1);
     CHECK(prepared.skipped_dynamic == 1);
-    CHECK(prepared.blur_approximations == 1);
+    // Plano 3b/Task 2: $Bg's own text is a well-formed <WindhawkBlur>, so it
+    // now parses into a real BlurSpec (blur_specs) instead of only getting
+    // the AcrylicBrush approximation (blur_approximations, pre-Task-2).
+    CHECK(prepared.blur_specs == 1);
+    CHECK(prepared.blur_approximations == 0);
+    REQUIRE(rule.styles[0].blur.has_value());
+    CHECK(rule.styles[0].blur->blur_amount == doctest::Approx(18.0));
+    CHECK(rule.styles[0].blur->tint.a == 0x25);
     CHECK(prepared.resource_variables.at(L"Accent") ==
           L"<AcrylicBrush TintColor=\"#25323232\"/>");
     CHECK(prepared.diagnostics.size() == 2);

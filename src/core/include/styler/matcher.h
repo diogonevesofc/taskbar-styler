@@ -9,6 +9,7 @@
 #include <string_view>
 #include <vector>
 
+#include <styler/blur.h>
 #include <styler/selector.h>
 #include <styler/theme.h>
 
@@ -22,6 +23,11 @@ struct PreparedStyle {
     std::wstring visual_state;  // Empty: unconditional.
     std::wstring value;
     bool is_xaml = false;
+    // Engaged when `value` came from a `<WindhawkBlur .../>` element. `value`
+    // then holds the AcrylicBrush fallback markup (blur_rewrite.h) and stays
+    // usable as-is; the TAP prefers `blur` and only parses `value` when the
+    // real brush cannot be built.
+    std::optional<BlurSpec> blur;
 };
 
 struct PreparedRule {
@@ -38,7 +44,8 @@ struct ResolvedTheme {
     std::vector<std::wstring> diagnostics;  // Theme's own + what was skipped.
     int skipped_captures = 0;     // `Prop=>Var` - Plano 3b.
     int skipped_dynamic = 0;      // `{{Var}}` values - Plano 3b.
-    int blur_approximations = 0;  // WindhawkBlur rewritten to AcrylicBrush.
+    int blur_specs = 0;           // `<WindhawkBlur>` values parsed for the real brush.
+    int blur_approximations = 0;  // Blur values that only got the AcrylicBrush rewrite.
 };
 
 ResolvedTheme PrepareTheme(const Theme& theme);

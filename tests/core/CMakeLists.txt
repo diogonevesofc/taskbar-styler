@@ -8,6 +8,7 @@ add_executable(styler_core_tests
   test_constants.cpp
   test_type_name.cpp
   test_blur_rewrite.cpp
+  test_blur.cpp
   test_corpus_resolution.cpp
   test_matcher.cpp
   test_config.cpp

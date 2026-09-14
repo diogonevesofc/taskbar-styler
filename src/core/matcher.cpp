@@ -7,6 +7,7 @@
 #include <styler/constants.h>
 #include <styler/style_rule.h>
 #include <styler/type_name.h>
+#include <styler/utf.h>
 
 namespace styler {
 namespace {
@@ -142,6 +143,12 @@ ResolvedTheme PrepareTheme(const Theme& theme) {
     out.diagnostics = theme.diagnostics;
 
     ResolvedConstants constants = ResolveConstants(theme.constants);
+    // A copy taken before the AcrylicBrush rewrite below, so the style loop
+    // can see a blur constant in its original `<WindhawkBlur .../>` form and
+    // parse it into a BlurSpec. `constants` itself keeps the rewritten form
+    // because resource variables (merged into a XAML ResourceDictionary) have
+    // no BlurSpec path and need real markup.
+    const ResolvedConstants raw_constants = constants;
 
     // A constant whose value is itself a whole <WindhawkBlur>/<Blur> element
     // (e.g. upstream's `Glass=<WindhawkBlur .../>` pattern) is rewritten
@@ -156,14 +163,36 @@ ResolvedTheme PrepareTheme(const Theme& theme) {
     // expects the AcrylicBrush form). RewriteWindhawkBlur no-ops on anything
     // that isn't the blur tag, so this is safe for the overwhelming
     // majority of constants that hold plain colors/numbers/XAML snippets.
-    // The per-style rewrite further down stays: it still catches blur XAML
-    // written directly in a style value with no constant involved, and
-    // re-rewriting an already-rewritten AcrylicBrush value is a no-op, so
-    // `blur_approximations` counts each distinct rewrite exactly once.
+    //
+    // This also decides, ONCE per distinct constant, whether it counts as a
+    // real BlurSpec or as a plain approximation - a second deviation from
+    // the brief's Step 5 listing, which only counted in the styles loop
+    // below. Counting there too double-counts a constant reused by several
+    // rules: measured against the corpus, that inflated `blur_specs` to 439
+    // (expected 272) and left `blur_approximations` above 0 for 17 themes
+    // whose one blur constant parses just fine - contradicting both this
+    // file's own corpus test (test_blur.cpp) and the brief's own
+    // TranslucentTaskbar smoke-test line ("0 blur approximations"). The
+    // styles loop below still parses each use (every style needs its own
+    // `PreparedStyle::blur`), it just skips re-counting a value that came
+    // from a constant (see the "written directly ... IN THE STYLE ITSELF"
+    // check there) since it is counted here instead - restoring the
+    // invariant the brief documents: blur_approximations counts only blurs
+    // that never became a BlurSpec anywhere.
     for (auto& [name, value] : constants) {
+        std::optional<BlurSpec> spec;
+        try {
+            spec = ParseWindhawkBlur(value);
+        } catch (const ParseError& ex) {
+            out.diagnostics.push_back(theme.id + L": constant $" + name +
+                                      L": " + Utf8ToWide(ex.what()) +
+                                      L" (blur)");
+        }
         bool rewritten = false;
         value = RewriteWindhawkBlur(value, &rewritten);
-        if (rewritten) {
+        if (spec) {
+            ++out.blur_specs;
+        } else if (rewritten) {
             ++out.blur_approximations;
         }
     }
@@ -221,10 +250,61 @@ ResolvedTheme PrepareTheme(const Theme& theme) {
                 continue;
             }
             if (p.is_xaml) {
-                bool rewritten = false;
-                p.value = RewriteWindhawkBlur(p.value, &rewritten);
-                if (rewritten) {
-                    ++out.blur_approximations;
+                try {
+                    // The constants pass above already rewrote any blur that
+                    // came in through a $Constant, so parse the ORIGINAL text
+                    // of this style as well as the substituted one: a blur
+                    // written inline reaches here untouched, a blur that
+                    // arrived via a constant reaches here already as
+                    // AcrylicBrush. Trying the raw value first recovers the
+                    // second case without undoing the rewrite that resource
+                    // variables still need.
+                    std::wstring raw = ApplyStyleConstants(v.value, raw_constants);
+                    std::optional<BlurSpec> spec = ParseWindhawkBlur(raw);
+                    if (spec) {
+                        p.blur = std::move(spec);
+                        bool rewritten = false;
+                        p.value = RewriteWindhawkBlur(raw, &rewritten);
+                        // A value written directly as `<WindhawkBlur .../>`
+                        // (or `<Blur .../>`) IN THE STYLE ITSELF is counted
+                        // here, once per style - even when one attribute is
+                        // itself `$Parameterized` (Aeris' and Windows7's
+                        // `BlurAmount="$taskbarBlurIncreace"` /
+                        // `TintColor="$aeroColor"`: `raw` differs from
+                        // `v.value` there too, so comparing the two texts
+                        // is not the right test). A bare `$Name` reference
+                        // whose OWN value is the whole tag was already
+                        // counted once, above, at the constant - counting it
+                        // again for every rule that reuses the constant
+                        // would inflate blur_specs by however many rules do.
+                        std::wstring_view trimmed = v.value;
+                        while (!trimmed.empty() &&
+                              (trimmed.front() == L' ' || trimmed.front() == L'\t')) {
+                            trimmed.remove_prefix(1);
+                        }
+                        if (trimmed.starts_with(L"<")) {
+                            ++out.blur_specs;
+                        }
+                    } else {
+                        bool rewritten = false;
+                        p.value = RewriteWindhawkBlur(p.value, &rewritten);
+                        if (rewritten) {
+                            ++out.blur_approximations;
+                        }
+                    }
+                } catch (const ParseError& ex) {
+                    // Fails closed per spec section 7.6: a malformed
+                    // <WindhawkBlur> does not take the whole theme down, only
+                    // this one style - which still gets the AcrylicBrush
+                    // fallback below, same as any other unparseable blur.
+                    out.diagnostics.push_back(theme.id + L": " + src.target +
+                                              L": " + Utf8ToWide(ex.what()) +
+                                              L" (blur)");
+                    bool rewritten = false;
+                    p.value = RewriteWindhawkBlur(p.value, &rewritten);
+                    if (rewritten) {
+                        ++out.blur_approximations;
+                    }
                 }
             }
             rule.styles.push_back(std::move(p));

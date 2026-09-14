@@ -114,8 +114,14 @@ void CALLBACK OnReloadSignaled(void*, BOOLEAN) {
     // Thread-pool thread: only hop to the UI thread here.
     try {
         HWND ui = GetTaskbarUiWnd();
-        if (!ui || !RunOnWindowThread(ui, ReloadThunk, nullptr)) {
+        if (!ui) {
             STYLER_LOG(LogLevel::Error, L"reload: taskbar UI window not found");
+        } else {
+            // A false return here means RunOnWindowThread already logged the
+            // accurate reason itself (e.g. the timeout it reports on
+            // SendMessageTimeoutW) - a second, less specific line on top of
+            // it would only obscure that reason.
+            RunOnWindowThread(ui, ReloadThunk, nullptr);
         }
     } catch (...) {
     }
@@ -197,10 +203,10 @@ HRESULT LoadConfiguredTheme() {
         }
         STYLER_LOG(LogLevel::Info,
                    L"theme %s: %zu rules prepared, %d captures and %d dynamic "
-                   L"values skipped, %d blur approximations",
+                   L"values skipped, %d blur brushes, %d blur approximations",
                    prepared->id.c_str(), prepared->rules.size(),
                    prepared->skipped_captures, prepared->skipped_dynamic,
-                   prepared->blur_approximations);
+                   prepared->blur_specs, prepared->blur_approximations);
         SetTheme(prepared);
         return S_OK;
     } catch (const styler::ParseError& ex) {
