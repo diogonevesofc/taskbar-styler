@@ -13,11 +13,13 @@ como o trabalho é organizado).
 | 1 | `styler_core`: seletores, regras, temas; 55 temas convertidos byte a byte | mesclado em `main` |
 | 2 | TAP carrega no explorer; exporta a árvore visual | mesclado em `main` |
 | 3 | Aplicar e desfazer estilos; assinatura permanente; CLI `apply/reset` | mesclado em `main` |
-| 3b | Fidelidade: blur real, variáveis de estilo, reciclagem, timeout no fan-out | **em execução**, branch `plano-3b-fidelidade` |
+| 3b | Fidelidade: blur real, variáveis de estilo, reciclagem, timeout no fan-out | código revisado e smoke concluído; **gate de pré-merge aberto** |
 | 4 | App de bandeja em C# .NET 10, sempre ligado, sobrevive a restart do explorer | não iniciado |
 
-`main` = `be0d3e6` (em `origin`). O branch `plano-3b-fidelidade` está em `origin`
-até `6c68ec6`; os commits posteriores são **locais** e precisam de push.
+`main` = `be0d3e6` (em `origin`). `origin/plano-3b-fidelidade` está em
+`0db9622`: o handoff anterior já foi enviado. A retomada está em commits
+locais de `plano-3b-fidelidade`: correções em `27ff1a8` e documentação de
+fechamento em seguida. Nenhum merge nem push foi feito nesta retomada.
 
 ## Plano 3b — onde parou
 
@@ -32,15 +34,20 @@ Decisões e histórico de execução: `docs/superpowers/plano-3b-decisoes.md`.
 | 4 | `XamlBlurBrush` por elemento; blur real na taskbar | concluída, revisada | `857a493`, `b080abc` |
 | 5 | Avaliador de `{{...}}` no core (puro) + 5 limpezas parqueadas | concluída, revisada | `2353759`, `fe3b95b` |
 | 6 | Capturas `Prop=>Var` e valores dinâmicos no TAP | concluída, revisada | `844a4b7`, `127e8fe` |
-| 7 | Reciclagem do `ItemsRepeater` | **não iniciada — começa por um spike** | — |
+| 7 | Reciclagem do `ItemsRepeater` | spike concluído; sem defeito observável no cenário; sem código adicional | `plano-3b-spike-reciclagem.md` |
 
-Suítes no último estado verde: **core 129/129** (7808 asserções) · **tap 24/24**
-(52 asserções) · 0 warnings novos sob `/W4`. Os únicos warnings aceitos são os
-pré-existentes `C5285` (doctest vendorizado) e `C4002` (headers do SDK).
+Validação da retomada: build completo com 0 warnings novos sob `/W4`;
+`ctest --verbose` com **core 129/129** (7808 asserções) e **tap 30/30**
+(92 asserções), saída 0. Os 55 temas continuam iguais byte a byte após
+extração; verificações de APIs proibidas e projeção WinUI sem ocorrências;
+includes WinRT continuam concentrados em `winrt_common.h`. `pytest tools/`
+teve 22 testes verdes nesta retomada. Smoke final das correções concluído;
+evidências e limites na seção abaixo.
 
-Todas as tasks acima passaram por revisão independente (conformidade com a
-especificação mais qualidade de código) e, quando havia achados, por uma rodada
-de correção e uma re-revisão escopada. Nada ficou com achado em aberto.
+As implementações das Tasks 1 a 6 passaram por revisão independente e correções.
+A revisão final encontrou os problemas adicionais descritos abaixo, já
+corrigidos e re-revisados. O gate operacional do reinício de Explorer continua
+aberto; revisão estática e suíte verde não o encerram.
 
 O que o Plano 3b já entregou, verificado ao vivo: blur de composição real
 (borrão gaussiano, tinta, saturação, luminosidade e ruído) em vez da aproximação
@@ -48,91 +55,114 @@ O que o Plano 3b já entregou, verificado ao vivo: blur de composição real
 `Prop=>Var` e valores `{{...}}` aplicados por elemento, com as pílulas do tema
 `Pills` acompanhando a largura do rótulo de cada botão, em tempo real.
 
+## Retomada no Codex — o que foi fechado
+
+### Ajustes da decisão 11
+
+`ApplyBucketForState` agora inclui o nome da propriedade no erro.
+`docs/smoke-test.md` documenta a rajada transitória de `MinWidth` negativo com
+`Pills`: no smoke da Task 6, `{{BtnW-6}}` passou a `-6` durante rebuild e gerou
+136 erros em 777 ms. A exceção fica restrita a essa causa durante a transição,
+com recuperação visual e ausência de erros em regime. O smoke da retomada
+também confirmou `MaxWidth` na mesma expressão; a exceção foi ampliada somente
+para essas duas propriedades. Não foi introduzida guarda de negativos.
+
+### Task 7 — spike concluído
+
+Com `Pills`, seis aplicativos Win32 de identidades distintas foram abertos;
+os três do meio foram fechados e substituídos por outros três. O snapshot já
+continha um conjunto de botões pré-criados: duas árvores com 12
+`TaskListButton` cada, e 24 linhas iniciais de estilização. As trocas de apps
+não produziram novas linhas para esses botões raiz. Reaplicar `Pills` produziu
+24 linhas novamente, sem diferença visual nas capturas antes/depois.
+
+**Conclusão: sem defeito observável neste cenário.** Isso não prova ausência
+de reciclagem. A Task 7 foi encerrada sem código de detecção/reaplicação
+adicional, como permitido pelo plano. O ensaio usou ícones agrupados, sem
+rótulos, e a imagem de um monitor; outros temas, configurações e versões de
+Windows continuam fora dessa evidência.
+
+Explorer PID **22488** estável no ensaio; **0 `ERR` desse PID**; reset às
+19:47:26 restaurou 223 elementos e o dreno registrou `0 held`. Este último
+número é por lote e não comprova a contagem global de handles vivos.
+Roteiro, horários e arquivos: [registro do spike](superpowers/plano-3b-spike-reciclagem.md).
+
+### Correções da revisão final
+
+- Dependências dinâmicas agora são a união dos estados efetivos de cada
+  propriedade. Regras derrotadas não alteram inscrições; uma linha estática
+  posterior remove o template dinâmico e suas dependências daquele estado.
+- Falha de parsing XAML mantém template e dependências para tentar novamente
+  quando a variável mudar. Na reexpansão, o valor inválido agora é retirado:
+  aplica-se o estado padrão ou `Unapply`, em vez de manter o último valor bom.
+- A reexpansão mantém uma referência local ao tema e descarta resultados se
+  elemento/tema forem substituídos durante reentrância. A montagem inicial
+  também valida a geração antes de reutilizar estado após resolução de XAML.
+- `DetachSource` devolve a interface `IGraphicsEffectSource` correta via
+  `copy_to_abi`, preservando seu endereço em vez de converter o `IUnknown`
+  canônico. `StoreAsync` propaga erros/cancelamento; se ainda estiver em curso,
+  cancela e segue pelo fallback existente, sem bloquear a thread de UI.
+- Quatro testes de estados/dependências e dois de efeitos/stream de ruído
+  elevaram a suíte TAP de 24 para 30 casos. Os testes puros não exercitam
+  reentrância do Explorer, precedência entre regras no motor nem rejeição
+  real de um valor pelo XAML; esses limites permanecem explícitos.
+
+Durante a primeira execução dos novos testes houve uma AV no encerramento do
+processo de testes: o apartment COM era desinicializado antes do cache de
+stream `thread_local`. A fixture foi corrigida para manter o apartment até
+depois do cache; a execução completa passou com saída 0. Esse defeito da
+fixture não identifica a causa do reinício histórico do Explorer.
+
+### Smoke final das correções — concluído
+
+DLL SHA-256: `E7B90B57D2B566E1ACD7EC0F5CADED8A40B4378C56F17F74AA1998E1B442724A`.
+Explorer PID **19132**, iniciado pelo restart autorizado das 19:47:50 para
+liberar a DLL e carregar a nova compilação.
+
+| Horário | Tema | Medição inicial |
+|---|---|---|
+| 19:49:00 | Pills | 157 elementos, 664 propriedades, 36 brushes, 6 variáveis |
+| 19:50:00 | Command_Center | 66 elementos, 268 propriedades, 52 brushes, 0 fallbacks |
+| 19:50:03 | TranslucentTaskbar | aplicação realizada |
+| 19:50:06 | Pills | 155 elementos, 638 propriedades, 34 brushes, 6 variáveis |
+
+Ao abrir três janelas, foram registrados **28 `ERR`** entre 19:52:12.226 e
+19:52:12.730 (504 ms), todos `0x80070057` em `MinWidth`/`MaxWidth` com
+`{{BtnW-6}}`. A captura `final-pills-new-buttons.png` mostrou recuperação
+visual; fechar as janelas não gerou nova rajada. O monitor inicial interrompeu
+a contagem por encontrar erros; a observação foi retomada para verificar
+ausência de novas linhas após essas 28 conhecidas. **Não houve zero erros
+totais nesse smoke.** A observação de dez minutos, de 19:50:44 a 20:00:44,
+terminou com PID 19132 preservado e nenhuma linha de erro adicional. Foram
+19 amostras; não houve crescimento do total de erros após a rajada conhecida.
+O spike anterior do PID 22488 continua com zero erros.
+
+Três hosts XAML novos foram reportados entre 19:58:25 e 19:58:33, sem falha
+observada. A memória privada variou de 122.408.960 a 220.880.896 bytes, e os
+handles do processo de 4.368 a 6.900; a subida coincidiu com esses hosts.
+Essas amostras não provam ausência de vazamento nem contam handles XAML vivos.
+
+`reset` às 20:01:22 restaurou 198 elementos, manteve o PID e devolveu o visual
+padrão. A configuração original (`theme` vazio, `logLevel` debug) foi
+restaurada byte a byte, conferida por SHA-256. Evidências locais:
+`final-stability.csv`, `final-smoke-log-before-rotation.txt`,
+`final-reset.png` e `final-reset.log` no scratch do Plano 3b.
+
 ## O que falta fazer, em ordem
 
-### 1. Dois ajustes pequenos, decididos e ainda não feitos
+1. Resolver o **gate de pré-merge** abaixo: o repro adversarial com dumps e
+   reinícios aguarda decisão explícita do dono da máquina. Não foi executado.
+2. Com esse gate encerrado e validação completa, integrar o branch por
+   fast-forward local, preservando o registro de decisões. **Nenhum merge
+   agora; nunca commit direto em `main` nem push sem pedido do dono.**
 
-Vieram de um achado do smoke da Task 6 (decisão 11 do registro):
+Continuam parqueados, fora desta rodada: cache de `ResolveProperty`; extração
+do cálculo do capturador mais próximo para teste puro; reaplicar somente a
+propriedade alterada em vez do bucket inteiro; reduzir os headers de composição
+incluídos por `winrt_common.h`. A guarda geral de valores negativos também não
+foi adotada.
 
-- **Nome da propriedade na linha de erro.** `ApplyBucketForState`
-  (`src/tap/style_engine.cpp`) loga apenas o id do elemento e o estado visual
-  quando uma aplicação falha. Quem diagnosticou a rajada de erros teve de
-  deduzir a propriedade pelo conteúdo do tema. Incluir o nome da propriedade
-  melhora todo diagnóstico futuro.
-- **Documentar a rajada transitória** em `docs/smoke-test.md`. Durante um
-  rebuild do painel de botões (por exemplo ao mudar o agrupamento da taskbar),
-  `{{BtnW-6}}` resolve para `-6` enquanto a largura passa por zero, e o XAML
-  rejeita largura mínima negativa. Foram 136 erros numa rajada de 777 ms, que
-  se curam sozinhos e não têm efeito visual. Sem essa nota, o critério
-  "zero erros" do roteiro de smoke deixa de significar alguma coisa.
-
-**Decisão já tomada:** não adicionar guarda de valor negativo agora. Exigiria
-uma lista de quais propriedades não aceitam negativo, o que é aumento de escopo
-e divergência do upstream, que calcula e escreve o mesmo valor. A decisão sobre
-a guarda foi levada para a revisão final do branch.
-
-### 2. Task 7 — reciclagem do `ItemsRepeater`, começando por um spike
-
-**Não escreva código antes do spike.** A task inteira pode sair de escopo, e o
-plano diz explicitamente que essa é uma saída legítima. O texto completo está na
-seção "Task 7" do plano; o essencial:
-
-A pergunta é se a taskbar realmente recicla elementos de item sem que a
-diagnostics reporte remoção e adição. Se reciclar, os estilos casados para o
-item antigo permanecem no elemento quando ele volta representando outro
-aplicativo.
-
-**Roteiro:** com o tema `Pills` aplicado (tem estilos por botão, é onde o
-defeito apareceria), abra seis aplicativos, feche os três do meio, abra outros
-três. Em nível `Debug`, o log registra uma linha por botão novo estilizado. Se
-cada botão novo produzir sua linha, não há reciclagem observável e a task sai de
-escopo. Se um botão aparecer sem linha correspondente e visualmente errado (a
-pílula de outro aplicativo, largura errada, rótulo com o espaçamento do
-anterior), o defeito existe.
-
-**Segunda pergunta, se o defeito existir:** qual sinal delata a reciclagem. O
-plano traz o código de instrumentação temporária para medir `DataContextChanged`
-contra a troca de `Visibility`, e as quatro saídas possíveis com o que fazer em
-cada uma.
-
-**Restrição que não muda:** sem projeção `Microsoft.UI.Xaml`. O
-`muxc::ItemsRepeater` que o upstream usa está fora. Se nenhum sinal de
-`Windows.UI.Xaml` servir, a task é cortada com o motivo registrado, e o Plano 4
-decide se a restrição muda.
-
-**Nota de implementação já decidida:** se a task for adiante, o lookup de
-elemento para identificador precisa obter o handle como o upstream faz em
-`HandleFromInspectable` (`vendor:10961`), consultando a interface `IInspectable`,
-e não pelo ponteiro do `FrameworkElement`. Ver decisão 3 do registro.
-
-### 3. Revisão final do branch inteiro
-
-Depois da Task 7, uma revisão do branch completo (`be0d3e6..HEAD`) no modelo
-mais capaz disponível, seguida de **uma** onda de correção e **uma** re-revisão
-escopada. Itens parqueados que essa revisão deve julgar:
-
-- **Da Task 3:** `DetachSource` poderia usar `copy_to_abi` em vez do cast de
-  identidade; `StoreAsync` com status diferente de `Started` é ignorado
-  silenciosamente; `winrt_common.h` faz todos os arquivos do TAP compilarem os
-  headers de composition, a 15 a 20 segundos cada, para benefício de poucos.
-- **Da Task 6:** `ResolveProperty` não tem cache, gerando duas análises de XAML
-  por estilo dinâmico por elemento na enxurrada inicial (51 valores dinâmicos em
-  185 elementos); a escolha do capturador mais próximo é aritmética pura sobre
-  cadeias e sequências, a peça mais sujeita a erro sutil, mas hoje só é
-  verificável a olho porque exige um elemento vivo, então vale extraí-la para
-  ser testável sem XAML; `ApplyBucketForState` reaplica o bucket inteiro a cada
-  propagação, não só a propriedade que mudou.
-- **A guarda de valor negativo** da decisão 11.
-
-### 4. Integração
-
-Com a revisão final limpa: rodar a suíte completa, mesclar
-`plano-3b-fidelidade` em `main` localmente (fast-forward, como nos planos
-anteriores), apagar o branch, e preservar o registro de decisões em
-`docs/superpowers/`. Nunca commitar direto em `main`. Nunca fazer push sem o
-dono do repositório pedir.
-
-### 5. Plano 4
+### Plano 4 — não iniciado
 
 O app de bandeja em C# .NET 10: sempre ligado, sobrevive a reinício do explorer,
 troca de tema pela bandeja. Ainda não tem plano escrito. Herda dois itens da
@@ -146,17 +176,18 @@ Em 2026-09-14 às 14:13:13 o shell reiniciou, cerca de três minutos depois de u
 smoke terminar em estado de reset, cem milissegundos após uma linha
 `new XAML host` no log do TAP. Nenhum agente deu o comando.
 
-**Evidência levantada, que aponta para não ser falha nossa:**
+**Causa indeterminada; não há dump que a atribua ou exclua o TAP.**
 
-- Zero eventos "Application Error 1000" naquele dia. Uma falha dentro da nossa
-  DLL geraria um, nomeando o módulo culpado.
-- O evento é um "Winlogon 1002 — o shell parou" sozinho, que é a assinatura de
-  um encerramento forçado, não de uma falha.
+- Na investigação anterior não foram encontrados eventos "Application Error
+  1000" correspondentes. Essa ausência não prova encerramento forçado nem
+  exclui falha dentro da DLL.
+- O evento "Winlogon 1002 — o shell parou" confirma a interrupção do shell;
+  isoladamente não identifica o mecanismo nem o componente responsável.
 - Houve quatro reinícios do shell naquele dia (09:20, 09:41, 13:48, 14:13),
   batendo com os reinícios do explorer feitos ao longo dos smokes para destravar
   a DLL na hora de relinkar. O das 14:13 é o último deles.
-- A revisão da Task 4 não encontrou nenhum ponto de falha no diff e mostrou que,
-  em estado de reset, nenhum código da Task 4 roda na inicialização de um host.
+- A revisão da Task 4 não encontrou causa no diff; isso não substitui captura
+  do erro em execução.
 - O smoke longo da Task 6, posterior, manteve o mesmo PID do começo ao fim, com
   185 elementos estilizados e aplicações e resets sucessivos.
 
@@ -170,12 +201,19 @@ rebaixa a questão; um dump apontando para a nossa DLL a promove a crítica. Iss
 reinicia o explorer várias vezes, então ficou para o dono da máquina decidir
 quando.
 
+Na retomada foi confirmado por leitura que a chave `LocalDumps\\explorer.exe`
+ainda não existe. A observação normal de dez minutos acima não substitui
+esse ensaio adversarial com captura de dump.
+
 ## Pendências de teste manual
 
-`docs/smoke-test.md` itens 7 a 9, que exigem a máquina do usuário: segundo
-monitor; menu Iniciar e central de notificações com um tema aplicado; dez
-minutos parado conferindo que a contagem de handles retidos bate com o número de
-elementos estilizados e não cresce.
+`docs/smoke-test.md` itens 7 a 9: segundo monitor; menu Iniciar e central de
+notificações com tema aplicado; observação de dez minutos em repouso.
+`held` é `unique_count - to_release.size()` **do lote drenado**, conforme
+`src/tap/release_queue.cpp`; não é a contagem global de handles vivos. Portanto,
+`held == elementos estilizados` e `held == 0` não provam o invariante global da
+spec §7.2. Essa instrumentação continua pendente para o Plano 4; não marcar o
+gate de handles vivos como validado com o contador atual.
 
 ## Onde estão as evidências que não estão no git
 
@@ -183,9 +221,10 @@ O diretório `.superpowers/sdd/2026-09-14-plano-3b-fidelidade/` tem um
 `.gitignore` com `*`, então **nada dele está versionado**. Ele contém, na máquina
 onde o trabalho foi feito: o registro de execução bruto, o relatório de cada task
 com as evidências de teste, os diffs de cada revisão, e 22 capturas de tela dos
-smokes (blur real com janela por baixo, claro e escuro, grão, pílulas seguindo o
-rótulo, antes e depois do reset). O que importa dessas evidências foi destilado
-em `docs/superpowers/plano-3b-decisoes.md`, que é versionado. Se precisar dos
+smokes anteriores (blur real com janela por baixo, claro e escuro, grão, pílulas
+seguindo o rótulo, antes e depois do reset), além dos arquivos `t7-*` da
+retomada. O que importa dessas evidências foi destilado nos registros de
+decisões e do spike, que são versionados. Se precisar dos
 originais e eles não existirem mais, não há como recuperá-los do git.
 
 ## Branches obsoletos

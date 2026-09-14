@@ -86,19 +86,20 @@ cmd /c "... VsDevCmd.bat ... && ...\CMake\bin\ctest.exe --test-dir build --outpu
 - Suítes: `core` e `tap` (contagens atuais em `docs/STATUS.md`); todas verdes
   antes de qualquer commit.
 - `python -m pytest tools/ -q` para as ferramentas de conversão de temas.
-- **`LNK1168` ao relinkar o TAP** = o explorer ainda tem a DLL carregada. Rode
-  `build\src\cli\taskbar-styler.exe unload` ou reinicie o explorer. Reiniciar o
-  explorer é autorizado neste projeto.
+- **`LNK1168` ao relinkar o TAP** = o explorer ainda tem a DLL carregada.
+  Reinicie o explorer; isso é autorizado neste projeto. O comando `unload`
+  apenas explica essa operação: não descarrega a DLL nem reinicia o processo.
 - Pré-requisito único de máquina: `taskbar-styler.exe setup` (UAC) grava
   `HKLM\Software\Microsoft\XAML\Debug\DisableCompositionDiag=1`. Já está feito
   na máquina de desenvolvimento.
 - Log do TAP: `%LOCALAPPDATA%\TaskbarStyler\log.txt`. Config:
-  `%LOCALAPPDATA%\TaskbarStyler\config.json` (`"logLevel":"debug"` para ver
+  `%APPDATA%\TaskbarStyler\config.json` (`"logLevel":"debug"` para ver
   cada mudança de estado visual).
 - Smoke ao vivo: `docs/smoke-test.md`. Toda task que muda pixel exige o smoke
   e evidências (linhas do log, PID do explorer igual antes e depois, zero
-  `ERR`). Para testar claro/escuro por script, a escrita no registro precisa
-  de um `WM_SETTINGCHANGE` (`ImmersiveColorSet`) depois.
+  `ERR` em regime; a exceção transitória de layout do `Pills` deve ser
+  registrada conforme o smoke). Para testar claro/escuro por script, a escrita
+  no registro precisa de um `WM_SETTINGCHANGE` (`ImmersiveColorSet`) depois.
 
 ## Como o trabalho é organizado
 

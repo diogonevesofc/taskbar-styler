@@ -24,7 +24,11 @@ Em desenvolvimento. O que já existe:
 - [x] 55 temas em JSON, com conversão provada sem perda byte a byte
 - [x] TAP que carrega no explorer e exporta a árvore visual
 - [x] Aplicar e desfazer estilos (Plano 3)
+- [x] Blur de composição real e variáveis de estilo por elemento (Plano 3b)
 - [ ] O aplicativo de bandeja (Plano 4)
+
+O Plano 3b aguarda o ensaio adversarial do reinício do Explorer antes do merge.
+Estado e pendências: [docs/STATUS.md](docs/STATUS.md).
 
 ## Compilando
 
@@ -67,8 +71,10 @@ backdrop da janela, com `BlurAmount`, saturação, luminosidade e ruído); o
 `AcrylicBrush` é o fallback quando a composição não está disponível — o log de
 `apply …` conta `blur brushes` e `blur fallbacks`.
 
-O que ainda é aproximação (Plano 3b): capturas `=>` e valores `{{…}}` são
-pulados — o log de `theme …` diz quantos.
+Capturas `Prop=>Var` e valores `{{…}}` são resolvidos por elemento e acompanham
+mudanças das propriedades capturadas. O log de `theme …` informa quantas
+capturas e valores dinâmicos o tema usa; uma variável indisponível deixa o
+estilo pendente até que possa ser resolvido.
 
 ## Temas
 
