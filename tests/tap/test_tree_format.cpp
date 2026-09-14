@@ -185,3 +185,24 @@ TEST_CASE("BuildForest yields an empty forest for a cycle") {
 
     CHECK(BuildForest({a, b}).empty());
 }
+
+TEST_CASE("DescribeIncompleteTree flags a truncated batch") {
+    using styler::tap::Reported;
+    std::vector<Reported> reported{
+        {1, 0, 0, 3, L"Taskbar.TaskbarFrame", L""},
+        {2, 1, 0, 0, L"Grid", L"RootGrid"},
+    };
+    auto lines = styler::tap::DescribeIncompleteTree(reported);
+    REQUIRE(lines.size() == 1);
+    CHECK(lines[0] == L"Taskbar.TaskbarFrame: 1 of 3 children reported");
+}
+
+TEST_CASE("DescribeIncompleteTree is quiet on a complete tree") {
+    using styler::tap::Reported;
+    std::vector<Reported> reported{
+        {1, 0, 0, 2, L"Taskbar.TaskbarFrame", L""},
+        {2, 1, 0, 0, L"Grid", L"RootGrid"},
+        {3, 1, 1, 0, L"Rectangle", L"BackgroundFill"},
+    };
+    CHECK(styler::tap::DescribeIncompleteTree(reported).empty());
+}

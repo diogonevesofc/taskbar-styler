@@ -197,7 +197,7 @@ public:
                                static_cast<unsigned>(theme_hr));
                 }
 
-                // The "initial apply" EngineStats line is NOT logged here:
+                // The first-drain-on-this-thread EngineStats line is NOT logged here:
                 // StartSubscription() only starts the advise thread and
                 // returns immediately (change_subscription.h) - the actual
                 // flood is XAML marshalling the walk onto THIS UI thread,

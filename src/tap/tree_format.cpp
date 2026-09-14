@@ -122,6 +122,50 @@ void AssignSiblingIndices(TreeNode& parent) {
     }
 }
 
+std::vector<std::wstring> DescribeIncompleteTree(
+    const std::vector<Reported>& reported) {
+    // Count how many children each reported handle actually received. A
+    // handle reported twice keeps its first report (same rule BuildForest
+    // uses), so the declared count comes from the first entry too.
+    std::map<unsigned long long, unsigned int> declared;
+    std::map<unsigned long long, unsigned int> delivered;
+    std::vector<unsigned long long> order;
+    for (const auto& r : reported) {
+        if (declared.emplace(r.handle, r.num_children).second) {
+            order.push_back(r.handle);
+        }
+        if (r.parent != 0) {
+            ++delivered[r.parent];
+        }
+    }
+
+    std::vector<std::wstring> out;
+    for (unsigned long long handle : order) {
+        unsigned int want = declared[handle];
+        auto it = delivered.find(handle);
+        unsigned int got = it == delivered.end() ? 0u : it->second;
+        if (got >= want) {
+            continue;
+        }
+        // Find the element's own report for a readable name.
+        std::wstring label;
+        for (const auto& r : reported) {
+            if (r.handle == handle) {
+                label = r.type;
+                if (!r.name.empty()) {
+                    label += L'#';
+                    label += r.name;
+                }
+                break;
+            }
+        }
+        wchar_t buf[64]{};
+        swprintf_s(buf, L": %u of %u children reported", got, want);
+        out.push_back(label + buf);
+    }
+    return out;
+}
+
 std::wstring FormatTree(const TreeNode& root) {
     std::wstring out;
     AppendNode(out, root, 0);

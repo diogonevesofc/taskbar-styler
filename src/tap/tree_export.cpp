@@ -105,6 +105,7 @@ class SnapshotCallback : public IVisualTreeServiceCallback2 {
                 r.handle = element.Handle;
                 r.parent = relation.Parent;
                 r.child_index = relation.ChildIndex;
+                r.num_children = element.NumChildren;
                 r.type = element.Type ? element.Type : L"";
                 r.name = element.Name ? element.Name : L"";
                 reported.push_back(std::move(r));
@@ -257,6 +258,11 @@ HRESULT ExportTreeToFile(const std::wstring& path) {
         AssignSiblingIndices(root);
         out += FormatTree(root);
         out += L'\n';
+    }
+
+    for (const auto& line : DescribeIncompleteTree(callback->reported)) {
+        STYLER_LOG(LogLevel::Error, L"incomplete visual tree: %s",
+                   line.c_str());
     }
 
     if (out.empty()) {

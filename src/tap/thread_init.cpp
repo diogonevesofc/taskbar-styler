@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <cwchar>
+#include <new>
 
 #include <tap/log.h>
 
@@ -107,8 +108,6 @@ bool RunOnWindowThread(HWND hWnd, ThreadProc proc, void* param) {
         return true;
     }
 
-    RunParam rp{proc, param, hWnd};
-
     HHOOK hook = SetWindowsHookExW(
         WH_CALLWNDPROC,
         [](int code, WPARAM wParam, LPARAM lParam) -> LRESULT {
@@ -138,8 +137,50 @@ bool RunOnWindowThread(HWND hWnd, ThreadProc proc, void* param) {
         return false;
     }
 
-    SendMessageW(hWnd, RunMessage(), 0, reinterpret_cast<LPARAM>(&rp));
+    // Heap, not stack: see the timeout branch below. nothrow because this
+    // runs under SetSite and the reload pool thread, neither of which may
+    // let an exception out.
+    auto* rp = new (std::nothrow) RunParam{proc, param, hWnd};
+    if (!rp) {
+        UnhookWindowsHookEx(hook);
+        return false;
+    }
+
+    // SendMessageW without a timeout parks this thread forever when the
+    // target UI thread is wedged - and the caller here is often the reload
+    // pool thread or SetSite, neither of which may hang the shell. The
+    // timeout is generous (a XAML host busy with a layout pass legitimately
+    // takes a while) but finite, and SMTO_ABORTIFHUNG returns at once when
+    // the window is already marked not-responding instead of waiting out
+    // the full budget. Inherited from the Plano 2 ledger ("SendMessageW sem
+    // timeout no thread_init.cpp") and repeated by the Plano 3 final review.
+    constexpr UINT kRunTimeoutMs = 5000;
+    DWORD_PTR result = 0;
+    LRESULT sent = SendMessageTimeoutW(hWnd, RunMessage(), 0,
+                                       reinterpret_cast<LPARAM>(rp),
+                                       SMTO_ABORTIFHUNG, kRunTimeoutMs,
+                                       &result);
     UnhookWindowsHookEx(hook);
+
+    if (!sent) {
+        // Timed out or failed. `rp` is deliberately leaked: the message may
+        // still be sitting in the target's queue, and a hook procedure that
+        // already started on that thread keeps running after
+        // UnhookWindowsHookEx returns - either one can still read `rp`. One
+        // RunParam per timeout is the price of never freeing memory another
+        // thread may be dereferencing inside explorer. Callers treat false
+        // as "not dispatched" and log; none of them retries in a loop (spec
+        // section 6.5).
+        STYLER_LOG(LogLevel::Error,
+                   L"RunOnWindowThread timed out or failed for hwnd %p "
+                   L"(thread %lu, error %lu)",
+                   hWnd, thread_id, GetLastError());
+        return false;
+    }
+    // A successful synchronous send returns only after the target thread
+    // finished dispatching the message, hooks included: nothing can reach
+    // `rp` any more.
+    delete rp;
     return true;
 }
 

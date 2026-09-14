@@ -26,6 +26,12 @@ struct Reported {
     unsigned long long handle = 0;
     unsigned long long parent = 0;
     unsigned int child_index = 0;
+    // VisualElement::NumChildren as diagnostics declared it (xamlom.h:176).
+    // The forest is built from the parent/child pairs alone; this is only
+    // used to tell a legitimately small subtree from a batch that ended
+    // early, which otherwise exports as a plausible but truncated tree with
+    // S_OK (Plano 2 ledger).
+    unsigned int num_children = 0;
     std::wstring type;
     std::wstring name;
 };
@@ -40,6 +46,12 @@ struct Reported {
 // why - which shows up as those elements simply missing from the result, not
 // as an infinite loop. Pure.
 std::vector<TreeNode> BuildForest(const std::vector<Reported>& reported);
+
+// One line per element that was reported with more children than the stream
+// actually delivered, in the order they were reported. Empty when the tree is
+// complete. Pure: no XAML, no COM.
+std::vector<std::wstring> DescribeIncompleteTree(
+    const std::vector<Reported>& reported);
 
 // Fills one_based_index only where a type repeats among siblings. An index on a
 // unique child would be noise in a selector. Pure.
