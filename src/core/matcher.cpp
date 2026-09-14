@@ -219,10 +219,10 @@ ResolvedTheme PrepareTheme(const Theme& theme) {
             }
         }
         for (const StyleRule& style : src.styles) {
-            if (std::holds_alternative<CaptureRule>(style)) {
-                ++out.skipped_captures;
-                out.diagnostics.push_back(theme.id + L": " + src.target +
-                                          L": capture rule skipped (Plano 3b)");
+            if (const auto* capture = std::get_if<CaptureRule>(&style)) {
+                rule.captures.push_back(
+                    PreparedCapture{capture->property_name, capture->var_name});
+                ++out.captures;
                 continue;
             }
             const ValueRule& v = std::get<ValueRule>(style);
@@ -314,8 +314,8 @@ ResolvedTheme PrepareTheme(const Theme& theme) {
             }
             rule.styles.push_back(std::move(p));
         }
-        if (rule.styles.empty()) {
-            continue;  // Nothing left to apply (e.g. only captures).
+        if (rule.styles.empty() && rule.captures.empty()) {
+            continue;  // Nothing to apply and nothing to capture.
         }
         out.rules.push_back(std::move(rule));
     }

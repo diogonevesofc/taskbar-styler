@@ -140,6 +140,16 @@ ResolvedSetter ResolveSetter(std::wstring_view type,
     return out;
 }
 
+wux::DependencyProperty ResolveProperty(std::wstring_view type,
+                                        std::wstring_view fallback_type,
+                                        std::wstring_view property) {
+    styler::PreparedStyle probe;
+    probe.property = std::wstring(property);
+    probe.is_xaml = true;  // An empty XAML value is the "clear" form, which
+                           // parses without needing to know the value type.
+    return ResolveSetter(type, fallback_type, probe).property;
+}
+
 wf::IInspectable ReadLocalValueWithWorkaround(
     wux::DependencyObject const& object, wux::DependencyProperty const& property) {
     wf::IInspectable value = object.ReadLocalValue(property);

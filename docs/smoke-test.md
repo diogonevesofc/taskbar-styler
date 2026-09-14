@@ -88,7 +88,25 @@ Pré-requisito: `cmake --build build`; Explorer reiniciado se a DLL estava carre
     escala com o quadrado do valor); só fica visível contra um papel de parede
     liso com `NoiseOpacity` bem mais alto.
 
-O que ainda é aproximação (Plano 3b): capturas `=>` e valores `{{…}}` são
-pulados — o log de `theme …` diz quantos. `WindhawkBlur` já não é
-aproximação: vira blur de composição real, e o `AcrylicBrush` só entra como
-fallback contado (`blur fallbacks` no log).
+13. **Variáveis de estilo.** `apply Pills`. No log: a linha `theme Pills: …`
+    traz `N captures, M dynamic values` (não mais "captures skipped"), e o
+    `apply (as of first drain)` termina em `K variables` com `K >= 1`.
+    Visual: os botões de app viram pílulas e **cada** pílula tem a largura do
+    próprio botão (prova da escolha do capturador mais próximo — se todas
+    ficarem com a mesma largura, o escore está errado).
+14. **Reação ao layout.** Com `Pills` aplicado, abra e feche aplicativos até a
+    taskbar mudar de largura, e passe o mouse por um botão com rótulo. As
+    pílulas reacompanham sem reaplicar o tema; em `Debug` o log mostra
+    `dynamic ... unresolved for now` no máximo durante o primeiro relatório de
+    cada botão, nunca em regime.
+15. **Blob.** `apply Blob` — os paddings do
+    `{{$buttonSpacing-2}},{{$taskbarTopOffset}},…` saem simétricos.
+
+`propagation depth capped` no log significa um ciclo (uma propriedade
+dinâmica que altera o que ela mesma captura) contido pelo cap: registre no
+ledger qual variável.
+
+`WindhawkBlur` não é aproximação: vira blur de composição real, e o
+`AcrylicBrush` só entra como fallback contado (`blur fallbacks` no log).
+Capturas `=>` e valores `{{…}}` também já são reais (Plano 3b/Task 6) — o log
+de `theme …` diz quantos de cada.

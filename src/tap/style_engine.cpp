@@ -15,6 +15,7 @@
 #include <tap/property_setter.h>
 #include <tap/release_queue.h>
 #include <tap/resource_variables.h>
+#include <tap/style_variables.h>
 
 namespace styler::tap {
 namespace {
@@ -42,6 +43,11 @@ struct PropertyState {
     // Value per visual state name; "" is the unconditional value. A null
     // IInspectable means "clear the property" (Prop:= with empty value).
     std::map<std::wstring, wf::IInspectable> values;
+    // For a dynamic value (`{{...}}`): the style whose text is re-expanded
+    // per element, keyed by visual state name exactly like `values`. Empty
+    // for a static property. Points into the ResolvedTheme, which t_cache_theme
+    // keeps alive.
+    std::map<std::wstring, const styler::PreparedStyle*> dynamic_styles;
     bool applied = false;           // We currently hold a custom value.
     wf::IInspectable original;      // Valid while `applied`.
     wf::IInspectable last_applied;  // ReadLocalValue after our last set.
@@ -76,6 +82,11 @@ struct ElementState {
     // A list: the CurrentStateChanged handler captures the bucket index and
     // buckets are never reordered or erased individually.
     std::vector<VsgBucket> buckets;
+    // The two type names ResolveSetter needs, captured once at match time:
+    // re-expanding a dynamic value later must resolve it against the same
+    // type it first resolved against.
+    std::wstring type;
+    std::wstring reported;
 };
 
 thread_local std::unordered_map<ElementId, ElementState> t_state;
@@ -464,6 +475,33 @@ void RestoreElement(ElementId id, ElementState& state) {
     state.buckets.clear();
 }
 
+// Expands one dynamic style's text against the variables visible from
+// `chain`, resolves the result to a value, and records what it depended on.
+// Returns false when the style must be skipped this time round (an undefined
+// variable, a bad expression) - the dependencies are STILL registered, so the
+// style comes back on its own once something captures what it needs.
+bool ResolveDynamicValue(ElementId id, wux::DependencyProperty const& property,
+                         const styler::PreparedStyle& style,
+                         const std::vector<void*>& chain,
+                         std::wstring_view type, std::wstring_view reported,
+                         wf::IInspectable* out) {
+    std::vector<std::wstring> deps;
+    std::optional<std::wstring> text =
+        styler::ExpandStyleVariables(style.value, LookupFor(chain), &deps);
+    RegisterConsumer(id, property, deps);
+    if (!text) {
+        STYLER_LOG(LogLevel::Debug, L"dynamic %s on %s: unresolved for now",
+                   style.property.c_str(), std::wstring(type).c_str());
+        return false;
+    }
+    styler::PreparedStyle expanded = style;
+    expanded.value = std::move(*text);
+    expanded.dynamic = false;
+    ResolvedSetter setter = ResolveSetter(type, reported, expanded);
+    *out = setter.clear ? nullptr : setter.value;
+    return true;
+}
+
 }  // namespace
 
 void SetTheme(std::shared_ptr<const styler::ResolvedTheme> theme) {
@@ -480,6 +518,15 @@ void OnElementAdded(ElementId id, wux::FrameworkElement const& element,
     if (!theme) {
         return;
     }
+    // Installed once per thread, on the first styled element: the callback is
+    // a thread_local hop from the variable store back into the engine.
+    // thread_init.cpp cannot include style_engine.h without inverting the
+    // dependency, so this is installed here rather than at thread init.
+    static thread_local bool t_callback_installed = false;
+    if (!t_callback_installed) {
+        t_callback_installed = true;
+        SetReapplyPropertyCallback(&ReapplyDynamicProperty);
+    }
     MergeResourceVariablesForThisThread(theme);
     std::wstring reported = reported_type ? reported_type : L"";
     XamlElementView view(element, reported);
@@ -495,6 +542,11 @@ void OnElementAdded(ElementId id, wux::FrameworkElement const& element,
     state.element = element;
 
     std::wstring type = view.TypeName();
+    state.type = type;
+    state.reported = reported;
+    // Computed once per report: every dynamic style on this element resolves
+    // its variables from the same position in the tree.
+    const std::vector<void*> chain = AncestorChain(element);
     std::unordered_set<wux::DependencyProperty, DependencyPropertyHash> claimed;
     for (const styler::RuleMatch& match : matches) {  // Last theme rule first.
         // Resolve this match's bucket: the group on the ancestor the
@@ -549,8 +601,30 @@ void OnElementAdded(ElementId id, wux::FrameworkElement const& element,
             claimed_by_match;
         for (const styler::PreparedStyle& style : match.rule->styles) {
             try {
-                const ResolvedSetter* setter = CachedSetter(theme, style, type, reported);
-                if (claimed.contains(setter->property)) {
+                wux::DependencyProperty property{nullptr};
+                wf::IInspectable value;
+                bool have_value = false;
+                const styler::BlurSpec* blur = nullptr;
+
+                if (style.dynamic) {
+                    // Never cached: the text differs per element and changes
+                    // afterwards. The property still resolves the same way,
+                    // and must resolve even when the value does not, or the
+                    // consumer could not be registered and the style would
+                    // never come back.
+                    property = ResolveProperty(type, reported, style.property);
+                    have_value = ResolveDynamicValue(id, property, style, chain,
+                                                     type, reported, &value);
+                } else {
+                    const ResolvedSetter* setter =
+                        CachedSetter(theme, style, type, reported);
+                    property = setter->property;
+                    value = setter->clear ? nullptr : setter->value;
+                    blur = setter->blur;
+                    have_value = true;
+                }
+
+                if (claimed.contains(property)) {
                     continue;  // An earlier (later-in-theme) match owns it.
                 }
                 // Claimed regardless of whether it turns out inert just
@@ -560,23 +634,25 @@ void OnElementAdded(ElementId id, wux::FrameworkElement const& element,
                 // Prop@State still blocks an EARLIER rule's unconditional
                 // Prop=... on that same property from ever applying, even
                 // though this rule's own value never activates.
-                claimed_by_match.insert(setter->property);
+                claimed_by_match.insert(property);
                 if (!style.visual_state.empty() && !group) {
                     STYLER_LOG(LogLevel::Debug, L"rule %zu: %s@%s without a group, inert",
                                match.rule->source_index, style.property.c_str(),
                                style.visual_state.c_str());
                     continue;
                 }
-                PropertyState& prop = bucket.properties[setter->property];
-                wf::IInspectable value = setter->clear ? nullptr : setter->value;
-                if (setter->blur) {
+                PropertyState& prop = bucket.properties[property];
+                if (style.dynamic) {
+                    prop.dynamic_styles[style.visual_state] = &style;
+                }
+                if (blur) {
                     // One brush per element: a XamlBlurBrush holds the
                     // element's Compositor and inserts a proxy key into its
                     // Resources, so the setter cache's shared value would
                     // wire every matched element to the first one's visual.
                     // The AcrylicBrush in setter->value is the documented
                     // fallback (src/core/blur_rewrite.h) and is shareable.
-                    if (auto brush = MakeBlurBrush(element, *setter->blur)) {
+                    if (auto brush = MakeBlurBrush(element, *blur)) {
                         value = brush;
                         ++t_stats.blur_brushes;
                     } else {
@@ -586,13 +662,35 @@ void OnElementAdded(ElementId id, wux::FrameworkElement const& element,
                                    type.c_str());
                     }
                 }
-                prop.values[style.visual_state] = value;
+                if (have_value) {
+                    prop.values[style.visual_state] = value;
+                }
             } catch (winrt::hresult_error const& ex) {
                 ++t_stats.failed_styles;
                 STYLER_LOG(LogLevel::Error, L"rule %zu %s=%s on %s: 0x%08X",
                            match.rule->source_index, style.property.c_str(),
                            style.value.c_str(), type.c_str(),
                            static_cast<unsigned>(ex.code()));
+            } catch (...) {
+                ++t_stats.failed_styles;
+            }
+        }
+
+        // Captures are registered AFTER this match's consumers (the style loop
+        // above), and RegisterCapture ends with a PropagateChange. That is what
+        // lets an element that both captures and consumes (Pills'
+        // Taskbar.TaskListButton captures BtnW and consumes {{BtnW-6}})
+        // converge in the same pass, without a second report.
+        for (const styler::PreparedCapture& capture : match.rule->captures) {
+            try {
+                RegisterCapture(id, element,
+                                ResolveProperty(type, reported, capture.property),
+                                capture.var_name);
+            } catch (winrt::hresult_error const& ex) {
+                ++t_stats.failed_styles;
+                STYLER_LOG(LogLevel::Error, L"capture %s=>%s on %s: 0x%08X",
+                           capture.property.c_str(), capture.var_name.c_str(),
+                           type.c_str(), static_cast<unsigned>(ex.code()));
             } catch (...) {
                 ++t_stats.failed_styles;
             }
@@ -655,7 +753,46 @@ void OnElementAdded(ElementId id, wux::FrameworkElement const& element,
                state.buckets.size());
 }
 
+void ReapplyDynamicProperty(ElementId id, wux::DependencyProperty const& property) {
+    auto it = t_state.find(id);
+    if (it == t_state.end()) {
+        return;
+    }
+    ElementState& state = it->second;
+    auto element = state.element.get();
+    if (!element) {
+        return;
+    }
+    const std::vector<void*> chain = AncestorChain(element);
+    for (size_t i = 0; i < state.buckets.size(); ++i) {
+        VsgBucket& bucket = state.buckets[i];
+        auto pit = bucket.properties.find(property);
+        if (pit == bucket.properties.end() || pit->second.dynamic_styles.empty()) {
+            continue;
+        }
+        PropertyState& prop = pit->second;
+        for (const auto& [visual_state, style] : prop.dynamic_styles) {
+            wf::IInspectable value;
+            if (ResolveDynamicValue(id, property, *style, chain, state.type,
+                                    state.reported, &value)) {
+                prop.values[visual_state] = value;
+            } else {
+                // Unresolvable again: drop the entry so PickValue falls
+                // through to Unapply rather than re-pushing a stale number.
+                prop.values.erase(visual_state);
+            }
+        }
+        ApplyBucketForState(id, element, bucket, CurrentStateName(bucket.group),
+                            false);
+        return;  // A property lives in exactly one bucket.
+    }
+}
+
 void OnElementRemoved(ElementId id) {
+    // Forget this element's captures and consumers first - even when it holds
+    // no style state (a capture-only element has its ElementState erased by
+    // OnElementAdded's empty-bucket sweep, but still owns a live capture).
+    ForgetElementVariables(id);
     auto it = t_state.find(id);
     if (it == t_state.end()) {
         return;
@@ -674,6 +811,11 @@ void RestoreAllOnThisThread() {
     for (const auto& [id, _] : t_state) {
         ids.push_back(id);
     }
+    // Before restoring: a capture teardown propagates, and propagating while
+    // the elements are being restored would re-apply values onto elements
+    // this call is about to undo - the same ordering bug the Plano 3 final
+    // review found in the reload path (B1).
+    ClearStyleVariablesOnThisThread();
     for (ElementId id : ids) {
         OnElementRemoved(id);
     }

@@ -227,12 +227,15 @@ TEST_CASE("PrepareTheme expands types, applies constants, rewrites blur, marks t
     CHECK(rule.styles[1].property == L"Visibility");
     CHECK_FALSE(rule.styles[1].is_xaml);
     CHECK_FALSE(rule.styles[1].dynamic);
-    // Width=>W is a CaptureRule (skipped_captures); Height={{W}} is the one
-    // dynamic style left - Task 6 is what expands it per element.
+    // Width=>W is a CaptureRule (now kept in rule.captures); Height={{W}} is
+    // the one dynamic style left - Task 6 is what expands it per element.
     CHECK(rule.styles[2].property == L"Height");
     CHECK(rule.styles[2].value == L"{{W}}");
     CHECK(rule.styles[2].dynamic);
-    CHECK(prepared.skipped_captures == 1);
+    REQUIRE(rule.captures.size() == 1);
+    CHECK(rule.captures[0].property == L"Width");
+    CHECK(rule.captures[0].var_name == L"W");
+    CHECK(prepared.captures == 1);
     CHECK(prepared.dynamic_values == 1);
     // Plano 3b/Task 2: $Bg's own text is a well-formed <WindhawkBlur>, so it
     // now parses into a real BlurSpec (blur_specs) instead of only getting
@@ -244,9 +247,28 @@ TEST_CASE("PrepareTheme expands types, applies constants, rewrites blur, marks t
     CHECK(rule.styles[0].blur->tint.a == 0x25);
     CHECK(prepared.resource_variables.at(L"Accent") ==
           L"<AcrylicBrush TintColor=\"#25323232\"/>");
-    // Only the capture is diagnosed at preparation time now - the dynamic
-    // value is not an error, just deferred to the engine (Task 6).
-    CHECK(prepared.diagnostics.size() == 1);
+    // Task 6: a capture is no longer diagnosed at preparation time - it is
+    // kept in rule.captures and wired up live. The dynamic value is not an
+    // error either, just deferred to the engine.
+    CHECK(prepared.diagnostics.size() == 0);
+}
+
+TEST_CASE("PrepareTheme keeps capture rules") {
+    Theme theme;
+    theme.id = L"T";
+    ThemeRule rule;
+    rule.target = L"Grid";
+    rule.selector = ParseSelectorGroups(L"Grid");
+    rule.styles.push_back(ParseStyleRule(L"ActualWidth=>W"));
+    theme.rules.push_back(std::move(rule));
+
+    ResolvedTheme resolved = PrepareTheme(theme);
+    REQUIRE(resolved.rules.size() == 1);
+    REQUIRE(resolved.rules[0].captures.size() == 1);
+    CHECK(resolved.rules[0].captures[0].property == L"ActualWidth");
+    CHECK(resolved.rules[0].captures[0].var_name == L"W");
+    CHECK(resolved.rules[0].styles.empty());
+    CHECK(resolved.captures == 1);
 }
 
 TEST_CASE("a constant that resolves to a dynamic marker is marked dynamic, not applied literally") {

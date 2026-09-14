@@ -20,6 +20,10 @@ void OnElementAdded(ElementId id, wux::FrameworkElement const& element,
                     const wchar_t* reported_type);
 void OnElementRemoved(ElementId id);
 
+// Re-expands and re-applies one dynamic property of one element. Installed as
+// style_variables.cpp's propagation callback; not called from anywhere else.
+void ReapplyDynamicProperty(ElementId id, wux::DependencyProperty const& property);
+
 // Whether this thread's engine holds customization state for `id`.
 bool ElementHasState(ElementId id);
 

@@ -37,6 +37,15 @@ ResolvedSetter ResolveSetter(std::wstring_view type,
                              std::wstring_view fallback_type,
                              const styler::PreparedStyle& style);
 
+// The DependencyProperty a name resolves to, without needing a value - the
+// dynamic path, where the value is only known per element and can change
+// afterwards. Implemented with the same <Style><Setter> trick ResolveSetter
+// uses, with an empty value. Throws winrt::hresult_error when the name does
+// not resolve.
+wux::DependencyProperty ResolveProperty(std::wstring_view type,
+                                        std::wstring_view fallback_type,
+                                        std::wstring_view property);
+
 // ReadLocalValue, except that a BindingExpression(Base) - observed for
 // properties declared as {TemplateBinding ...} - is replaced by
 // GetAnimationBaseValue, since SetValue with a binding expression fails and

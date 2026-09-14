@@ -202,10 +202,10 @@ HRESULT LoadConfiguredTheme() {
             STYLER_LOG(LogLevel::Error, L"%s", line.c_str());
         }
         STYLER_LOG(LogLevel::Info,
-                   L"theme %s: %zu rules prepared, %d captures skipped, %d "
+                   L"theme %s: %zu rules prepared, %d captures, %d "
                    L"dynamic values, %d blur brushes, %d blur approximations",
                    prepared->id.c_str(), prepared->rules.size(),
-                   prepared->skipped_captures, prepared->dynamic_values,
+                   prepared->captures, prepared->dynamic_values,
                    prepared->blur_specs, prepared->blur_approximations);
         SetTheme(prepared);
         return S_OK;

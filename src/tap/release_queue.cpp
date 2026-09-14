@@ -8,6 +8,7 @@
 #include <tap/log.h>
 #include <tap/release_policy.h>
 #include <tap/style_engine.h>
+#include <tap/style_variables.h>
 #include <tap/visual_tree_watcher.h>
 #include <tap/winrt_common.h>
 
@@ -89,10 +90,11 @@ void FlushReleasesNow() {
         STYLER_LOG(LogLevel::Info,
                    L"apply (as of first drain): %zu elements, %zu "
                    L"properties, %zu failed, %zu visual-state styles deferred, "
-                   L"%zu blur brushes, %zu blur fallbacks",
+                   L"%zu blur brushes, %zu blur fallbacks, %zu variables",
                    stats.styled_elements, stats.applied_properties,
                    stats.failed_styles, stats.deferred_visual_state_styles,
-                   stats.blur_brushes, stats.blur_fallbacks);
+                   stats.blur_brushes, stats.blur_fallbacks,
+                   DefinedVariableCount());
     }
 }
 

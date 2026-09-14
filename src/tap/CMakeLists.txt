@@ -21,6 +21,7 @@ add_library(taskbar_styler_tap MODULE
   release_queue.cpp
   change_subscription.cpp
   style_engine.cpp
+  style_variables.cpp
   property_setter.cpp
   theme_session.cpp
   resource_variables.cpp

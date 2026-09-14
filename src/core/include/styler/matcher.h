@@ -35,9 +35,17 @@ struct PreparedStyle {
     bool dynamic = false;
 };
 
+// `Prop=>Var` on a matched element: publish the element's live value of
+// `property` as the style variable `var_name`.
+struct PreparedCapture {
+    std::wstring property;
+    std::wstring var_name;
+};
+
 struct PreparedRule {
     std::vector<std::vector<ElementMatcher>> chains;  // Types expanded.
     std::vector<PreparedStyle> styles;
+    std::vector<PreparedCapture> captures;  // `Prop=>Var` - Plano 3b/Task 6.
     size_t source_index = 0;  // Index into Theme::rules, for logs.
 };
 
@@ -47,7 +55,7 @@ struct ResolvedTheme {
     std::vector<PreparedRule> rules;  // Dead rules dropped, order kept.
     std::map<std::wstring, std::wstring> resource_variables;
     std::vector<std::wstring> diagnostics;  // Theme's own + what was skipped.
-    int skipped_captures = 0;     // `Prop=>Var` - Plano 3b.
+    int captures = 0;             // `Prop=>Var` wired up - Plano 3b/Task 6.
     int dynamic_values = 0;       // `{{Var}}` values left for the engine - Plano 3b/5.
     // Distinct blur SOURCES parsed into a real BlurSpec: once per constant
     // whose own value is a `<WindhawkBlur>`/`<Blur>` tag, once per inline
