@@ -66,28 +66,36 @@ void FlushReleasesNow() {
                result.to_release.size(), result.unique_count - result.to_release.size(),
                ReleasedHandleCount());
 
-    // This thread's first drain only ever runs once the queue has sat quiet
-    // for kQuietMs (FlushReleasesIfQuiet), which the initial subscription
-    // flood's own dense burst of Add reports cannot do until it is over -
-    // unlike logging right after StartSubscription() returns in SetSite,
-    // which fires before XAML's marshalled walk can even start (see
-    // tap_boundary.cpp). So this is where Task 5's "initial apply" counters
-    // are complete. Review finding (minor): FlushReleasesIfQuiet checks
-    // staleness at the START of a report, against the PREVIOUS report's
-    // queue time - so arming (and this log line) needs one MORE tree
-    // change to arrive after the flood's own last report, whenever that
-    // happens to be (a clock tick, a hover, anything). Naming that in the
-    // line itself so a taskbar that goes instantly idle right after a
-    // clean load does not read as a load that silently did nothing.
+    // This thread's first drain since the last theme change only ever runs
+    // once the queue has sat quiet for kQuietMs (FlushReleasesIfQuiet),
+    // which the flood's own dense burst of Add reports cannot do until it
+    // is over - unlike logging right after StartSubscription() returns in
+    // SetSite/ReloadThemeOnUiThread, which fires before XAML's marshalled
+    // walk can even start (see tap_boundary.cpp and theme_session.cpp). So
+    // this is where the real "apply" counters are complete. Task 7's
+    // ReloadThemeOnUiThread calls ResetInitialApplyLogged() (via
+    // RestoreAllOnThisThread) on every theme change, so each one gets this
+    // log line again, not just the process's very first load. Review
+    // finding (minor): FlushReleasesIfQuiet checks staleness at the START
+    // of a report, against the PREVIOUS report's queue time - so arming
+    // (and this log line) needs one MORE tree change to arrive after the
+    // flood's own last report, whenever that happens to be (a clock tick, a
+    // hover, anything). Naming that in the line itself so a taskbar that
+    // goes instantly idle right after a clean load does not read as a load
+    // that silently did nothing.
     if (!t_initial_apply_logged) {
         t_initial_apply_logged = true;
         EngineStats stats = StatsForThisThread();
         STYLER_LOG(LogLevel::Info,
-                   L"initial apply (as of first drain): %zu elements, %zu "
+                   L"apply (as of first drain): %zu elements, %zu "
                    L"properties, %zu failed, %zu visual-state styles deferred",
                    stats.styled_elements, stats.applied_properties,
                    stats.failed_styles, stats.deferred_visual_state_styles);
     }
+}
+
+void ResetInitialApplyLogged() {
+    t_initial_apply_logged = false;
 }
 
 void FlushReleasesIfQuiet() {

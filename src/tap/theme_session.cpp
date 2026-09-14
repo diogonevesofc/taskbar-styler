@@ -217,6 +217,22 @@ HRESULT LoadConfiguredTheme() {
 void ReloadThemeOnUiThread() {
     try {
         STYLER_LOG(LogLevel::Info, L"reload requested");
+        // 0. Take the outgoing theme off before touching anything else.
+        //    CurrentTheme() has exactly one reader (style_engine.cpp's
+        //    OnElementAdded), so this makes every element re-reported as a
+        //    side effect of the restore below - measured happening
+        //    synchronously, on this same thread, while unapplying a
+        //    property - inert instead of getting freshly styled with the
+        //    theme that is on its way out (found in review: those
+        //    re-reports land before LoadConfiguredTheme's own
+        //    SetTheme(nullptr)/SetTheme(new) runs below, so without this
+        //    they are matched against the OLD theme and never make it into
+        //    RestoreAllOnThisThread's own snapshot - they survive, holding
+        //    their handles, until some later reload happens to catch them).
+        //    Doing this first also makes a Deferred return, just below,
+        //    coherent: the taskbar ends up fully restored either way, never
+        //    left mid-style with a theme that is no longer installed.
+        SetTheme(nullptr);
         // 1. Restore, on every thread that may hold state. This thread
         //    first (direct call - it is the taskbar UI thread, the one
         //    SetSite ran on), then each other host through its own message
@@ -250,12 +266,13 @@ void ReloadThemeOnUiThread() {
             STYLER_LOG(LogLevel::Error, L"reload: StartSubscription 0x%08X",
                        static_cast<unsigned>(hr));
         }
-        EngineStats stats = StatsForThisThread();
-        STYLER_LOG(LogLevel::Info,
-                   L"reload applied: %zu elements, %zu properties, %zu "
-                   L"failed, subscription 0x%08X",
-                   stats.styled_elements, stats.applied_properties,
-                   stats.failed_styles, static_cast<unsigned>(hr));
+        // No "reload applied: N elements" line here on purpose: reading
+        // EngineStats now would always read zero, the same reason SetSite
+        // never logs it either (tap_boundary.cpp's comment) - the flood is
+        // XAML marshalling onto this thread, which cannot run until this
+        // function returns to the message loop. RestoreAllOnThisThread just
+        // above rearmed release_queue.cpp's first-drain log, so the real
+        // count is one "apply (as of first drain)" log line away instead.
     } catch (...) {
         STYLER_LOG(LogLevel::Error, L"reload threw");
     }

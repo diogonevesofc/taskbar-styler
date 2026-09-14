@@ -12,6 +12,7 @@
 
 #include <tap/log.h>
 #include <tap/property_setter.h>
+#include <tap/release_queue.h>
 #include <tap/resource_variables.h>
 
 namespace styler::tap {
@@ -471,7 +472,7 @@ void OnElementAdded(ElementId id, wux::FrameworkElement const& element,
     if (!theme) {
         return;
     }
-    MergeResourceVariablesForThisThread(*theme);
+    MergeResourceVariablesForThisThread(theme);
     std::wstring reported = reported_type ? reported_type : L"";
     XamlElementView view(element, reported);
     std::vector<styler::RuleMatch> matches = styler::FindMatchingRules(*theme, view);
@@ -656,6 +657,10 @@ void RestoreAllOnThisThread() {
     STYLER_LOG(LogLevel::Info, L"restored %zu elements on thread %lu", ids.size(),
                GetCurrentThreadId());
     t_stats = EngineStats{};
+    // So the next theme's own flood gets its "apply (as of first drain)"
+    // log line, instead of that log staying silent after this thread's
+    // very first one (release_queue.cpp).
+    ResetInitialApplyLogged();
 }
 
 EngineStats StatsForThisThread() {

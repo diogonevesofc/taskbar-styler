@@ -164,7 +164,18 @@ int CmdApply(const wchar_t* id) {
         return 1;
     }
     if (SignalReloadIfLoaded()) {
-        wprintf(L"tema '%s' enviado ao TAP ja carregado\n", id);
+        // Not "tema aplicado": the reload can come back Deferred (an advise
+        // still in flight) and just retry on its own later, or fail closed
+        // in StartSubscription - either way this process cannot know that
+        // from here. The log is the truth; this only confirms the request
+        // reached a resident TAP.
+        wprintf(L"pedido de tema '%s' enviado ao TAP ja carregado\n", id);
+        if (!CompositionDiagDisabled()) {
+            wprintf(L"aviso: DisableCompositionDiag nao esta em 1; o TAP nao "
+                    L"vai assinar mudancas, entao esse pedido nao sera "
+                    L"aplicado (rode \"taskbar-styler setup\" como "
+                    L"administrador).\n");
+        }
         return 0;
     }
     wprintf(L"TAP nao carregado; carregando com o tema '%s'\n", id);
@@ -178,7 +189,13 @@ int CmdReset() {
         return 1;
     }
     if (SignalReloadIfLoaded()) {
-        wprintf(L"tema desfeito\n");
+        wprintf(L"pedido de reset enviado ao TAP\n");
+        if (!CompositionDiagDisabled()) {
+            wprintf(L"aviso: DisableCompositionDiag nao esta em 1; o TAP nao "
+                    L"vai assinar mudancas, entao esse pedido nao sera "
+                    L"aplicado (rode \"taskbar-styler setup\" como "
+                    L"administrador).\n");
+        }
     } else {
         wprintf(L"nenhum TAP carregado; config limpo\n");
     }

@@ -78,7 +78,7 @@ TEST_CASE("every shipped theme resolves constants exactly as upstream would") {
     CHECK(themes == 55);
 }
 
-TEST_CASE("only the three known themes keep an unresolved dollar") {
+TEST_CASE("only Fluid keeps an unresolved dollar") {
     // Spec section 7.6's tolerance for an unmatched `$` is what Fluid
     // relies on. Luminosity_variant_Dock and Luminosity_variant_Compact
     // reference $WidgetGap57, which upstream's longest-prefix rule resolves

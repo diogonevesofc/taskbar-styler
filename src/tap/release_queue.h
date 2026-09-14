@@ -23,4 +23,10 @@ void FlushReleasesIfQuiet();
 // OnVisualTreeChange.
 void FlushReleasesNow();
 
+// Rearms the "apply (as of first drain)" log line in FlushReleasesNow so the
+// NEXT drain reports it again. Call once per theme change (from
+// RestoreAllOnThisThread), so a reload's real apply counts get their own
+// log line instead of staying silent after this thread's very first one.
+void ResetInitialApplyLogged();
+
 }  // namespace styler::tap

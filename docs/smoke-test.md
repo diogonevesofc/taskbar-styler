@@ -48,9 +48,10 @@ Pré-requisito: `cmake --build build`; Explorer reiniciado se a DLL estava carre
 1. `build\src\cli\taskbar-styler.exe list` — imprime 55 temas.
 2. `apply TranslucentTaskbar` — carrega o TAP; a linha `Rectangle#BackgroundStroke`
    some e o fundo muda. Log: `theme TranslucentTaskbar: … prepared`,
-   `initial apply: … 0 failed`.
+   `apply (as of first drain): … 0 failed`.
 3. `apply Lucent` (sem reiniciar o Explorer) — log `reload requested` …
-   `reload applied`; visual troca.
+   `restored N elements` … `subscription started` … `apply (as of first
+   drain)`; visual troca.
 4. Passe o mouse sobre um botão de app aberto: hover/press conforme o tema; ao
    sair, volta. Com `"logLevel":"debug"` no config, cada troca loga
    `apply <id> state '<Estado>'`.
@@ -64,9 +65,14 @@ Pré-requisito: `cmake --build build`; Explorer reiniciado se a DLL estava carre
    configurações rápidas com um tema aplicado: sem crash; log mostra
    `drained N handles, M held` após cada rajada.
 9. **Handles estáveis**: deixe a taskbar parada 10 minutos com tema aplicado.
-   A última linha `drained … M held` não deve mudar de M, e `released so far`
-   não deve crescer. Um M que cresce com a taskbar parada é vazamento — reporte
-   com o tema e o log.
+   O invariante é `held == elementos estilizados` — M em `drained … M held`
+   é a contagem de handles retidos porque o elemento carrega estado nosso,
+   não uma contagem solta; confira que M bate com o `elements` da última
+   linha `apply (as of first drain)`, não só que M "não muda" de um drain
+   para o outro. Depois de um `reset` (nenhum tema aplicado), M deve ser 0.
+   `released so far` não deve crescer com a taskbar parada. Um M que cresce,
+   ou que não bate com o total de elementos estilizados, é vazamento —
+   reporte com o tema e o log.
 
 O que ainda é aproximação (Plano 3b): `WindhawkBlur` vira `AcrylicBrush`
 (sem ruído e sem `BlurAmount`); capturas `=>` e valores `{{…}}` são pulados —

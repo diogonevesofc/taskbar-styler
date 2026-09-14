@@ -195,18 +195,31 @@ ResolvedTheme PrepareTheme(const Theme& theme) {
                 continue;
             }
             const ValueRule& v = std::get<ValueRule>(style);
-            if (v.IsDynamic()) {
+            PreparedStyle p;
+            p.property = v.property_name;
+            p.visual_state = v.visual_state;
+            p.is_xaml = v.is_xaml_value;
+            // Substitute constants BEFORE checking for a dynamic marker, not
+            // after (found in review): a theme can hide `{{...}}` inside a
+            // $constant - Pills' `taskbarFill` resolves to the literal
+            // `{{__unset}}` - and ValueRule::IsDynamic() on the raw,
+            // pre-substitution text never sees it, so the style used to
+            // reach ResolveSetter and fail there instead of being skipped
+            // here. Checking the resolved text for "{{" is a strict
+            // superset of the old raw-text check: substitution never
+            // introduces a "{{" that was not already produced by a
+            // constant's own value, and never removes one already in the
+            // style's own literal text either (it only rewrites `$Name`
+            // tokens). Mirrors upstream: a `{{Var}}` nobody defines means
+            // "leave this alone" (vendor:400-404).
+            p.value = ApplyStyleConstants(v.value, constants);
+            if (p.value.find(L"{{") != std::wstring::npos) {
                 ++out.skipped_dynamic;
                 out.diagnostics.push_back(theme.id + L": " + src.target + L": " +
                                           v.property_name +
                                           L": dynamic value skipped (Plano 3b)");
                 continue;
             }
-            PreparedStyle p;
-            p.property = v.property_name;
-            p.visual_state = v.visual_state;
-            p.is_xaml = v.is_xaml_value;
-            p.value = ApplyStyleConstants(v.value, constants);
             if (p.is_xaml) {
                 bool rewritten = false;
                 p.value = RewriteWindhawkBlur(p.value, &rewritten);

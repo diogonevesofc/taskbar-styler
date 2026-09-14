@@ -12,7 +12,7 @@
 namespace styler::tap {
 namespace {
 
-thread_local const styler::ResolvedTheme* t_merged_theme = nullptr;
+thread_local std::shared_ptr<const styler::ResolvedTheme> t_merged_theme;
 thread_local wux::ResourceDictionary t_theme_dict{nullptr};
 thread_local std::unordered_map<std::wstring, wf::IInspectable> t_originals;
 thread_local std::vector<styler::ResourceVariable> t_entries;
@@ -94,17 +94,18 @@ void RefreshReferences() {
 
 }  // namespace
 
-void MergeResourceVariablesForThisThread(const styler::ResolvedTheme& theme) {
-    if (t_merged_theme == &theme) {
+void MergeResourceVariablesForThisThread(
+    const std::shared_ptr<const styler::ResolvedTheme>& theme) {
+    if (t_merged_theme.get() == theme.get()) {
         return;
     }
     UnmergeResourceVariablesForThisThread();
-    t_merged_theme = &theme;
-    if (theme.resource_variables.empty()) {
+    t_merged_theme = theme;
+    if (theme->resource_variables.empty()) {
         return;
     }
     std::vector<std::wstring> diag;
-    t_entries = styler::ParseResourceVariables(theme.resource_variables, &diag);
+    t_entries = styler::ParseResourceVariables(theme->resource_variables, &diag);
     for (const auto& line : diag) {
         STYLER_LOG(LogLevel::Error, L"%s", line.c_str());
     }

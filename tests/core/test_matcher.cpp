@@ -233,6 +233,26 @@ TEST_CASE("PrepareTheme expands types, applies constants, rewrites blur, skips t
     CHECK(prepared.diagnostics.size() == 2);
 }
 
+TEST_CASE("a constant that resolves to a dynamic marker is skipped, not applied literally") {
+    // Pills.json's `taskbarFill`/`taskbarStrokeColor` are exactly this:
+    // `"{{__unset}}"`, meant as "leave this alone" (upstream vendor:400-404),
+    // but hidden behind a $constant so the raw style text ("Fill:=$Unset")
+    // never looks dynamic on its own - only the resolved value does.
+    Theme theme;
+    theme.id = L"T";
+    theme.constants = {{L"Unset", L"{{__unset}}"}};
+
+    ThemeRule r1;
+    r1.target = L"Grid#RootGrid > Rectangle";
+    r1.selector = ParseSelectorGroups(r1.target);
+    r1.styles = {ParseStyleRule(L"Fill:=$Unset")};
+    theme.rules = {r1};
+
+    auto prepared = PrepareTheme(theme);
+    CHECK(prepared.rules.empty());  // The rule's only style was skipped.
+    CHECK(prepared.skipped_dynamic == 1);
+}
+
 TEST_CASE("FindMatchingRules returns the last matching rule first") {
     Tree t;
     Theme theme;
