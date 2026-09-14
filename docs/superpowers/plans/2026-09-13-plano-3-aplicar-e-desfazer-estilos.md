@@ -2573,6 +2573,32 @@ void SetOrClearValue(wux::DependencyObject const& object,
                      wux::DependencyProperty const& property,
                      wf::IInspectable const& value, bool initial_apply);
 
+// Whether the current thread is inside a write this engine made itself, so
+// that write's own PropertyChanged callback does not react to it as if the
+// shell had changed the value. Every direct SetValue/ClearValue on a
+// property this engine tracks - including SetOrClearValue's own deferred
+// BackgroundFill.Fill set, which runs later, on the dispatcher, outside
+// whatever scope its caller held - must be wrapped in a ModifyingGuard
+// while it runs (review round 1, C2: the deferred set used to run
+// unguarded, so its own PropertyChanged notification looked external and
+// overwrote the tracked `original` with the engine's own value - restore
+// then "restored" to that, never to the shell's).
+bool IsModifying();
+
+// RAII for the flag IsModifying() reads: true for the guard's lifetime,
+// false again on scope exit - including via an exception, which a
+// hand-paired `t_modifying = true; ...; t_modifying = false;` cannot
+// guarantee (review round 1, C1: the original ApplyProperty call had no
+// try/catch at all, so a throw left the flag stuck true for the rest of
+// the thread's life).
+class ModifyingGuard {
+public:
+    ModifyingGuard();
+    ~ModifyingGuard();
+    ModifyingGuard(const ModifyingGuard&) = delete;
+    ModifyingGuard& operator=(const ModifyingGuard&) = delete;
+};
+
 }  // namespace styler::tap
 ```
 
@@ -2644,10 +2670,18 @@ wux::Style LoadStyleWithFallbacks(std::wstring_view type,
     throw winrt::hresult_error(E_UNEXPECTED);
 }
 
+// Set while this thread is inside a write ApplyProperty/RestoreElement (or
+// this file's own deferred BackgroundFill.Fill callback) made itself. See
+// IsModifying()/ModifyingGuard in property_setter.h.
+thread_local bool t_modifying = false;
+
 // Pending deferred BackgroundFill sets on this thread, so a second apply to
 // the same element cancels the first instead of racing it.
+// CoreDispatcher::TryRunAsync returns IAsyncOperation<bool> (whether the
+// callback got to run), not IAsyncAction - the type below was measured
+// against the real SDK header, not assumed.
 thread_local std::vector<std::pair<winrt::weak_ref<wux::DependencyObject>,
-                                   wf::IAsyncAction>>
+                                   wf::IAsyncOperation<bool>>>
     t_delayed_fill;
 
 bool IsBackgroundFill(wux::DependencyObject const& object,
@@ -2737,16 +2771,31 @@ void SetOrClearValue(wux::DependencyObject const& object,
             auto op = object.Dispatcher().TryRunAsync(
                 winrt::Windows::UI::Core::CoreDispatcherPriority::High,
                 [object, property, value]() {
+                    // Runs later, on the dispatcher, well outside whatever
+                    // ModifyingGuard scope the original SetOrClearValue call
+                    // held (that one is long gone by now) - so this needs
+                    // its own guard around SetValue itself, or the
+                    // PropertyChanged callback it triggers looks like an
+                    // external change and clobbers `original` with our own
+                    // brush (review round 1, C2). The whole body, not just
+                    // SetValue, sits inside one try: erase_if's
+                    // weak_ref::get() and the captured objects' destructors
+                    // ran unguarded before (review round 1, I1).
                     try {
-                        object.SetValue(property, value);
+                        {
+                            ModifyingGuard guard;
+                            object.SetValue(property, value);
+                        }
+                        std::erase_if(t_delayed_fill, [&](const auto& e) {
+                            auto live = e.first.get();
+                            return live && live == object;
+                        });
                     } catch (winrt::hresult_error const& ex) {
                         STYLER_LOG(LogLevel::Error, L"deferred SetValue 0x%08X",
                                    static_cast<unsigned>(ex.code()));
+                    } catch (...) {
+                        STYLER_LOG(LogLevel::Error, L"deferred SetValue threw");
                     }
-                    std::erase_if(t_delayed_fill, [&](const auto& e) {
-                        auto live = e.first.get();
-                        return live && live == object;
-                    });
                 });
             t_delayed_fill.push_back({winrt::make_weak(object), op});
             return;
@@ -2762,6 +2811,18 @@ void SetOrClearValue(wux::DependencyObject const& object,
         return;
     }
     object.SetValue(property, value);
+}
+
+bool IsModifying() {
+    return t_modifying;
+}
+
+ModifyingGuard::ModifyingGuard() {
+    t_modifying = true;
+}
+
+ModifyingGuard::~ModifyingGuard() {
+    t_modifying = false;
 }
 
 }  // namespace styler::tap
@@ -2850,9 +2911,6 @@ struct ElementState {
 
 thread_local std::unordered_map<ElementId, ElementState> t_state;
 thread_local EngineStats t_stats;
-// Set while we are the ones changing a property, so our own
-// PropertyChanged callback does not re-apply on top of itself.
-thread_local bool t_modifying = false;
 
 // Per-thread cache of resolved setters, keyed by the immutable PreparedStyle
 // the theme owns. Cleared when the theme changes. The value object (a brush,
@@ -2860,7 +2918,12 @@ thread_local bool t_modifying = false;
 // setter.Value() the same way.
 thread_local std::unordered_map<const styler::PreparedStyle*, ResolvedSetter>
     t_setter_cache;
-thread_local const styler::ResolvedTheme* t_cache_theme = nullptr;
+// A shared_ptr, not a raw ResolvedTheme*: holding a ref keeps the old
+// theme's address from ever being reused, which a raw pointer cannot
+// (review round 1, I2) - SetTheme(B) can free A, and B's allocation can
+// legitimately land at A's old address, aliasing a stale PreparedStyle*
+// cache key to the wrong style with no way to detect it.
+thread_local std::shared_ptr<const styler::ResolvedTheme> t_cache_theme;
 
 // ElementView over a live FrameworkElement (matcher.h documents the
 // contract). Every method is called on the element's own UI thread.
@@ -2908,7 +2971,10 @@ public:
             probe.property = std::wstring(property);
             probe.value = std::wstring(expected);
             ResolvedSetter setter = ResolveSetter(TypeName(), reported_, probe);
-            wf::IInspectable actual = element_.ReadLocalValue(setter.property);
+            // ReadLocalValueWithWorkaround, not ReadLocalValue, like the
+            // rest of the engine (review round 1 minor) - the same
+            // BindingExpression case applies to a probed comparison too.
+            wf::IInspectable actual = ReadLocalValueWithWorkaround(element_, setter.property);
             if (!actual || actual == wux::DependencyProperty::UnsetValue()) {
                 return false;
             }
@@ -2962,13 +3028,13 @@ private:
     std::wstring reported_;
 };
 
-const ResolvedSetter* CachedSetter(const styler::ResolvedTheme& theme,
-                                   const styler::PreparedStyle& style,
-                                   std::wstring_view type,
-                                   std::wstring_view fallback) {
-    if (t_cache_theme != &theme) {
+const ResolvedSetter* CachedSetter(
+    const std::shared_ptr<const styler::ResolvedTheme>& theme,
+    const styler::PreparedStyle& style, std::wstring_view type,
+    std::wstring_view fallback) {
+    if (t_cache_theme.get() != theme.get()) {
         t_setter_cache.clear();
-        t_cache_theme = &theme;
+        t_cache_theme = theme;
     }
     auto it = t_setter_cache.find(&style);
     if (it != t_setter_cache.end()) {
@@ -2988,18 +3054,23 @@ void RestoreElement(ElementId id, ElementState& state) {
             if (prop.changed_token) {
                 element.UnregisterPropertyChangedCallback(property, prop.changed_token);
             }
-            if (prop.original) {
-                t_modifying = true;
-                SetOrClearValue(element, property, prop.original, false);
-                t_modifying = false;
-            }
+            // Always calls through, even when `original` is null (never had
+            // a local value before us): SetOrClearValue is also what
+            // cancels a still-pending deferred BackgroundFill.Fill set
+            // (review round 1 minor), and that must happen regardless of
+            // whether there is anything to restore to. UnsetValue() there
+            // means ClearValue - the correct outcome when there was no
+            // original.
+            ModifyingGuard guard;
+            SetOrClearValue(element, property,
+                            prop.original ? prop.original
+                                          : wux::DependencyProperty::UnsetValue(),
+                            false);
         } catch (winrt::hresult_error const& ex) {
-            t_modifying = false;
             STYLER_LOG(LogLevel::Error, L"restore %llu failed 0x%08X",
                        static_cast<unsigned long long>(id),
                        static_cast<unsigned>(ex.code()));
         } catch (...) {
-            t_modifying = false;
         }
     }
     state.properties.clear();
@@ -3011,9 +3082,18 @@ void ApplyProperty(ElementId id, wux::FrameworkElement const& element,
     PropertyState prop;
     prop.original = ReadLocalValueWithWorkaround(element, property);
     prop.custom = custom_or_unset;
-    t_modifying = true;
-    SetOrClearValue(element, property, custom_or_unset, true);
-    t_modifying = false;
+    // A ModifyingGuard, not a hand-paired set/clear with no try/catch at
+    // all: if SetOrClearValue throws (it can; it is documented to), the
+    // flag must not stay stuck true for the rest of the thread's life -
+    // every later PropertyChanged callback would return early at its own
+    // IsModifying() check forever, and the shell's own overwrites would
+    // never be captured as a new `original` again (review round 1, C1).
+    // The guard's destructor runs during unwinding too, so this cannot
+    // happen.
+    {
+        ModifyingGuard guard;
+        SetOrClearValue(element, property, custom_or_unset, true);
+    }
     prop.last_applied = ReadLocalValueWithWorkaround(element, property);
 
     // Something else (a Setter, a template) overwriting our value gets our
@@ -3023,7 +3103,7 @@ void ApplyProperty(ElementId id, wux::FrameworkElement const& element,
         property, [id](wux::DependencyObject const& sender,
                        wux::DependencyProperty const& changed) {
             try {
-                if (t_modifying) {
+                if (IsModifying()) {
                     return;
                 }
                 auto it = t_state.find(id);
@@ -3039,16 +3119,15 @@ void ApplyProperty(ElementId id, wux::FrameworkElement const& element,
                 if (local != p.last_applied) {
                     p.original = local;
                 }
-                t_modifying = true;
-                SetOrClearValue(sender, changed,
-                                p.custom ? p.custom : wux::DependencyProperty::UnsetValue(),
-                                false);
+                {
+                    ModifyingGuard guard;
+                    SetOrClearValue(sender, changed,
+                                    p.custom ? p.custom : wux::DependencyProperty::UnsetValue(),
+                                    false);
+                }
                 p.last_applied = ReadLocalValueWithWorkaround(sender, changed);
-                t_modifying = false;
             } catch (winrt::hresult_error const&) {
-                t_modifying = false;
             } catch (...) {
-                t_modifying = false;
             }
         });
     state.properties[property] = std::move(prop);
@@ -3094,7 +3173,7 @@ void OnElementAdded(ElementId id, wux::FrameworkElement const& element,
             }
             try {
                 const ResolvedSetter* setter =
-                    CachedSetter(*theme, style, type, reported);
+                    CachedSetter(theme, style, type, reported);
                 if (!claimed.insert(setter->property).second) {
                     continue;  // An earlier (later-in-theme) rule owns it.
                 }

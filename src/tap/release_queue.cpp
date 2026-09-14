@@ -72,13 +72,19 @@ void FlushReleasesNow() {
     // unlike logging right after StartSubscription() returns in SetSite,
     // which fires before XAML's marshalled walk can even start (see
     // tap_boundary.cpp). So this is where Task 5's "initial apply" counters
-    // are complete.
+    // are complete. Review finding (minor): FlushReleasesIfQuiet checks
+    // staleness at the START of a report, against the PREVIOUS report's
+    // queue time - so arming (and this log line) needs one MORE tree
+    // change to arrive after the flood's own last report, whenever that
+    // happens to be (a clock tick, a hover, anything). Naming that in the
+    // line itself so a taskbar that goes instantly idle right after a
+    // clean load does not read as a load that silently did nothing.
     if (!t_initial_apply_logged) {
         t_initial_apply_logged = true;
         EngineStats stats = StatsForThisThread();
         STYLER_LOG(LogLevel::Info,
-                   L"initial apply: %zu elements, %zu properties, %zu failed, "
-                   L"%zu visual-state styles deferred",
+                   L"initial apply (as of first drain): %zu elements, %zu "
+                   L"properties, %zu failed, %zu visual-state styles deferred",
                    stats.styled_elements, stats.applied_properties,
                    stats.failed_styles, stats.deferred_visual_state_styles);
     }

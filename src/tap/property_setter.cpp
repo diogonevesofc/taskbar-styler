@@ -63,6 +63,11 @@ wux::Style LoadStyleWithFallbacks(std::wstring_view type,
     throw winrt::hresult_error(E_UNEXPECTED);
 }
 
+// Set while this thread is inside a write ApplyProperty/RestoreElement (or
+// this file's own deferred BackgroundFill.Fill callback) made itself. See
+// IsModifying()/ModifyingGuard in property_setter.h.
+thread_local bool t_modifying = false;
+
 // Pending deferred BackgroundFill sets on this thread, so a second apply to
 // the same element cancels the first instead of racing it.
 // CoreDispatcher::TryRunAsync returns IAsyncOperation<bool> (whether the
@@ -160,16 +165,31 @@ void SetOrClearValue(wux::DependencyObject const& object,
             auto op = object.Dispatcher().TryRunAsync(
                 winrt::Windows::UI::Core::CoreDispatcherPriority::High,
                 [object, property, value]() {
+                    // Runs later, on the dispatcher, well outside whatever
+                    // ModifyingGuard scope the original SetOrClearValue call
+                    // held (that one is long gone by now) - so this needs
+                    // its own guard around SetValue itself, or the
+                    // PropertyChanged callback it triggers looks like an
+                    // external change and clobbers `original` with our own
+                    // brush (review finding C2). The whole body, not just
+                    // SetValue, sits inside one try: erase_if's
+                    // weak_ref::get() and the captured objects' destructors
+                    // ran unguarded before (review finding I1).
                     try {
-                        object.SetValue(property, value);
+                        {
+                            ModifyingGuard guard;
+                            object.SetValue(property, value);
+                        }
+                        std::erase_if(t_delayed_fill, [&](const auto& e) {
+                            auto live = e.first.get();
+                            return live && live == object;
+                        });
                     } catch (winrt::hresult_error const& ex) {
                         STYLER_LOG(LogLevel::Error, L"deferred SetValue 0x%08X",
                                    static_cast<unsigned>(ex.code()));
+                    } catch (...) {
+                        STYLER_LOG(LogLevel::Error, L"deferred SetValue threw");
                     }
-                    std::erase_if(t_delayed_fill, [&](const auto& e) {
-                        auto live = e.first.get();
-                        return live && live == object;
-                    });
                 });
             t_delayed_fill.push_back({winrt::make_weak(object), op});
             return;
@@ -185,6 +205,18 @@ void SetOrClearValue(wux::DependencyObject const& object,
         return;
     }
     object.SetValue(property, value);
+}
+
+bool IsModifying() {
+    return t_modifying;
+}
+
+ModifyingGuard::ModifyingGuard() {
+    t_modifying = true;
+}
+
+ModifyingGuard::~ModifyingGuard() {
+    t_modifying = false;
 }
 
 }  // namespace styler::tap

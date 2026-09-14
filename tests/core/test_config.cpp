@@ -23,6 +23,8 @@ TEST_CASE("missing fields default to empty") {
 TEST_CASE("malformed json is a ParseError") {
     CHECK_THROWS_AS(ParseConfigJson("{nope"), styler::ParseError);
     CHECK_THROWS_AS(ParseConfigJson(R"({"theme": 5})"), styler::ParseError);
+    CHECK_THROWS_AS(ParseConfigJson(R"({"logLevel": 5})"), styler::ParseError);
+    CHECK_THROWS_AS(ParseConfigJson("[]"), styler::ParseError);  // Well-formed, not an object.
 }
 
 TEST_CASE("serialize round-trips") {

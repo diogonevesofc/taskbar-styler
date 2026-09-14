@@ -45,4 +45,30 @@ void SetOrClearValue(wux::DependencyObject const& object,
                      wux::DependencyProperty const& property,
                      wf::IInspectable const& value, bool initial_apply);
 
+// Whether the current thread is inside a write this engine made itself, so
+// that write's own PropertyChanged callback does not react to it as if the
+// shell had changed the value. Every direct SetValue/ClearValue on a
+// property this engine tracks - including SetOrClearValue's own deferred
+// BackgroundFill.Fill set, which runs later, on the dispatcher, outside
+// whatever scope its caller held - must be wrapped in a ModifyingGuard
+// while it runs (found in review: the deferred set used to run unguarded,
+// so its own PropertyChanged notification looked external and overwrote
+// the tracked `original` with the engine's own value - restore then
+// "restored" to that, never to the shell's).
+bool IsModifying();
+
+// RAII for the flag IsModifying() reads: true for the guard's lifetime,
+// false again on scope exit - including via an exception, which a
+// hand-paired `t_modifying = true; ...; t_modifying = false;` cannot
+// guarantee (found in review: ApplyProperty's own call had no try/catch at
+// all, so a throw left the flag stuck true for the rest of the thread's
+// life).
+class ModifyingGuard {
+public:
+    ModifyingGuard();
+    ~ModifyingGuard();
+    ModifyingGuard(const ModifyingGuard&) = delete;
+    ModifyingGuard& operator=(const ModifyingGuard&) = delete;
+};
+
 }  // namespace styler::tap

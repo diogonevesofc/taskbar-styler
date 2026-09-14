@@ -7,6 +7,7 @@
 #include <fstream>
 #include <memory>
 #include <sstream>
+#include <system_error>
 
 #include <styler/config.h>
 #include <styler/matcher.h>
@@ -70,6 +71,24 @@ HRESULT LoadConfiguredTheme() {
                 STYLER_LOG(LogLevel::Error, L"config.json invalid: %S", ex.what());
                 SetTheme(nullptr);
                 return E_INVALIDARG;
+            } catch (const std::exception& ex) {
+                STYLER_LOG(LogLevel::Error, L"config.json failed: %S", ex.what());
+                SetTheme(nullptr);
+                return E_INVALIDARG;
+            }
+        } else {
+            // Distinguish "no config yet" (normal on a first run - path
+            // simply does not exist, fall through to "no theme configured"
+            // below) from "a config exists but this process could not read
+            // it" (a permissions problem or a locked file - worth an Error,
+            // not a silent, misleading "no theme configured").
+            std::error_code ec;
+            if (std::filesystem::exists(path, ec)) {
+                STYLER_LOG(LogLevel::Error,
+                           L"config.json exists but could not be opened: %s",
+                           path.c_str());
+                SetTheme(nullptr);
+                return E_ACCESSDENIED;
             }
         }
     }
