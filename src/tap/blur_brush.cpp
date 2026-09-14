@@ -227,8 +227,9 @@ wuc::CompositionBrush XamlBlurBrush::CreateEffectBrush() {
         const float n = std::clamp(*m_spec.noise_opacity, 0.0f, 1.0f);
         auto opacity = winrt::make_self<ColorMatrixEffect>();
         opacity->Source = *border;
-        // Scale every channel, alpha included: the composite below blends in
-        // premultiplied space.
+        // Scale every channel, alpha included, matching upstream. D2D's
+        // ColorMatrix de-premultiplies before applying, so noise amplitude
+        // ends up scaling as NoiseOpacity squared (measured, Task 4 report).
         opacity->Matrix = {n,    0.0f, 0.0f, 0.0f, 0.0f, n,    0.0f, 0.0f,
                            0.0f, 0.0f, n,    0.0f, 0.0f, 0.0f, 0.0f, n,
                            0.0f, 0.0f, 0.0f, 0.0f};

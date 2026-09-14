@@ -83,8 +83,10 @@ Pré-requisito: `cmake --build build`; Explorer reiniciado se a DLL estava carre
     `TintColor="{ThemeResource SystemChromeMediumColor}"`). Alterne
     Configurações → Personalização → Cores entre claro e escuro: o tom da
     taskbar acompanha, sem reaplicar o tema.
-12. **Ruído.** `apply Luminosity_variant_Classic`: o grão fino é visível
-    contra um papel de parede liso.
+12. **Ruído.** `apply Luminosity_variant_Classic`: o grão está presente, mas
+    no `NoiseOpacity="0.1"` do tema é praticamente imperceptível (a amplitude
+    escala com o quadrado do valor); só fica visível contra um papel de parede
+    liso com `NoiseOpacity` bem mais alto.
 
 O que ainda é aproximação (Plano 3b): capturas `=>` e valores `{{…}}` são
 pulados — o log de `theme …` diz quantos. `WindhawkBlur` já não é
