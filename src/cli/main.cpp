@@ -5,9 +5,15 @@
 
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <string>
 
 #include <cli/loader.h>
+#include <styler/config.h>
+#include <styler/selector.h>
+#include <tap/ipc.h>
 
 namespace {
 
@@ -29,12 +35,17 @@ bool CompositionDiagDisabled() {
 
 int Usage() {
     wprintf(L"uso: taskbar-styler <comando>\n\n");
-    wprintf(L"  load     carrega o TAP no explorer.exe\n");
-    wprintf(L"  status   mostra o estado\n");
-    wprintf(L"  setup    grava DisableCompositionDiag=1 (precisa de administrador)\n");
-    wprintf(L"  unload   explica por que nao ha descarregamento\n");
+    wprintf(L"  load             carrega o TAP no explorer.exe\n");
+    wprintf(L"  apply <ThemeId>  aplica um tema (ao vivo, se o TAP ja estiver carregado)\n");
+    wprintf(L"  reset            desfaz o tema aplicado (ao vivo)\n");
+    wprintf(L"  list             lista os temas disponiveis\n");
+    wprintf(L"  status           mostra o estado\n");
+    wprintf(L"  setup            grava DisableCompositionDiag=1 (precisa de administrador)\n");
+    wprintf(L"  unload           explica por que nao ha descarregamento\n");
     return 2;
 }
+
+int CmdLoad();  // Forward: CmdApply falls back to it when no TAP is loaded.
 
 int CmdLoad() {
     DWORD pid = styler::cli::FindTaskbarPid();
@@ -87,6 +98,112 @@ int CmdLoad() {
     return 0;
 }
 
+styler::Config ReadConfig() {
+    styler::Config c;
+    std::wstring path = styler::tap::ConfigPath();
+    std::ifstream in(std::filesystem::path(path), std::ios::binary);
+    if (!in) {
+        return c;
+    }
+    std::stringstream buf;
+    buf << in.rdbuf();
+    try {
+        c = styler::ParseConfigJson(buf.str());
+    } catch (const styler::ParseError& ex) {
+        wprintf(L"aviso: config.json invalido (%S); sera reescrito\n", ex.what());
+    }
+    return c;
+}
+
+bool WriteConfig(const styler::Config& c) {
+    std::filesystem::path path(styler::tap::ConfigPath());
+    std::error_code ec;
+    std::filesystem::create_directories(path.parent_path(), ec);
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        wprintf(L"erro: nao consegui escrever %s\n", path.c_str());
+        return false;
+    }
+    out << styler::SerializeConfigJson(c);
+    return true;
+}
+
+// True when a TAP is resident and waiting: it is the one that creates the
+// event. Signals it when so.
+bool SignalReloadIfLoaded() {
+    HANDLE ev = OpenEventW(EVENT_MODIFY_STATE, FALSE, styler::tap::kReloadEventName);
+    if (!ev) {
+        return false;
+    }
+    SetEvent(ev);
+    CloseHandle(ev);
+    return true;
+}
+
+bool ThemeExists(const std::wstring& id) {
+    std::wstring dir = styler::cli::ThemesDir();
+    if (dir.empty() || id.empty()) {
+        return false;
+    }
+    return std::filesystem::exists(std::filesystem::path(dir) / (id + L".json"));
+}
+
+int CmdApply(const wchar_t* id) {
+    if (!id || !*id) {
+        wprintf(L"uso: taskbar-styler apply <ThemeId>   (veja: list)\n");
+        return 2;
+    }
+    if (!ThemeExists(id)) {
+        wprintf(L"erro: tema '%s' nao encontrado em %s\n", id,
+                styler::cli::ThemesDir().c_str());
+        return 1;
+    }
+    styler::Config c = ReadConfig();
+    c.theme = id;
+    if (!WriteConfig(c)) {
+        return 1;
+    }
+    if (SignalReloadIfLoaded()) {
+        wprintf(L"tema '%s' enviado ao TAP ja carregado\n", id);
+        return 0;
+    }
+    wprintf(L"TAP nao carregado; carregando com o tema '%s'\n", id);
+    return CmdLoad();  // SetSite reads the config it just wrote.
+}
+
+int CmdReset() {
+    styler::Config c = ReadConfig();
+    c.theme.clear();
+    if (!WriteConfig(c)) {
+        return 1;
+    }
+    if (SignalReloadIfLoaded()) {
+        wprintf(L"tema desfeito\n");
+    } else {
+        wprintf(L"nenhum TAP carregado; config limpo\n");
+    }
+    return 0;
+}
+
+int CmdList() {
+    std::wstring dir = styler::cli::ThemesDir();
+    if (dir.empty()) {
+        wprintf(L"erro: pasta themes nao encontrada ao lado do executavel\n");
+        return 1;
+    }
+    int count = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+        if (entry.path().extension() != L".json" ||
+            entry.path().filename() == L"credits.json") {
+            continue;
+        }
+        wprintf(L"%s\n", entry.path().stem().c_str());
+        ++count;
+    }
+    wprintf(L"\n%d temas\n", count);
+    return 0;
+}
+
 int CmdStatus() {
     DWORD pid = styler::cli::FindTaskbarPid();
     if (pid == 0) {
@@ -114,6 +231,16 @@ int CmdStatus() {
                 : L"composition diagnostics: ativadas - a assinatura "
                   L"permanente nao inicia; rode \"taskbar-styler setup\" como "
                   L"administrador\n");
+
+    styler::Config c = ReadConfig();
+    wprintf(L"tema configurado: %s\n", c.theme.empty() ? L"nenhum" : c.theme.c_str());
+
+    HANDLE reload_event = OpenEventW(SYNCHRONIZE, FALSE, styler::tap::kReloadEventName);
+    bool tap_loaded = reload_event != nullptr;
+    if (reload_event) {
+        CloseHandle(reload_event);
+    }
+    wprintf(L"TAP: %s\n", tap_loaded ? L"carregado" : L"nao carregado");
     return 0;
 }
 
@@ -178,6 +305,15 @@ int wmain(int argc, wchar_t** argv) {
     }
     if (wcscmp(argv[1], L"load") == 0) {
         return CmdLoad();
+    }
+    if (wcscmp(argv[1], L"apply") == 0) {
+        return CmdApply(argc > 2 ? argv[2] : nullptr);
+    }
+    if (wcscmp(argv[1], L"reset") == 0) {
+        return CmdReset();
+    }
+    if (wcscmp(argv[1], L"list") == 0) {
+        return CmdList();
     }
     if (wcscmp(argv[1], L"status") == 0) {
         return CmdStatus();

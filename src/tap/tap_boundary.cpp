@@ -116,6 +116,10 @@ public:
             }
             if (!site) {
                 StopHostWatch();
+                // Before StopSubscription(): a reload signalled mid-teardown
+                // must not race SetSite(nullptr) for ownership of the
+                // subscription it is about to stop.
+                StopReloadWatch();
                 StopSubscription();
                 CloseDiagnostics();
                 return S_OK;
@@ -208,6 +212,12 @@ public:
                 if (FAILED(sub_hr)) {
                     STYLER_LOG(LogLevel::Error, L"StartSubscription failed 0x%08X",
                                static_cast<unsigned>(sub_hr));
+                }
+
+                HRESULT reload_hr = StartReloadWatch();
+                if (FAILED(reload_hr)) {
+                    STYLER_LOG(LogLevel::Error, L"StartReloadWatch failed 0x%08X",
+                               static_cast<unsigned>(reload_hr));
                 }
             }
         } catch (...) {

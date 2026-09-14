@@ -1,19 +1,24 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <tap/theme_session.h>
 
-#include <shlobj.h>
-
+#include <atomic>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <new>
+#include <optional>
 #include <sstream>
 #include <system_error>
 
 #include <styler/config.h>
 #include <styler/matcher.h>
 #include <styler/theme_loader.h>
+#include <tap/change_subscription.h>
+#include <tap/ipc.h>
 #include <tap/log.h>
 #include <tap/style_engine.h>
+#include <tap/thread_init.h>
 #include <tap/visual_tree_watcher.h>
 
 namespace styler::tap {
@@ -44,18 +49,79 @@ LogLevel ParseLevel(const std::wstring& s, LogLevel fallback) {
     return fallback;
 }
 
-}  // namespace
-
-std::wstring ConfigPath() {
-    wchar_t* appdata = nullptr;
-    if (FAILED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &appdata))) {
-        return L"";
+// Upstream vendor:IsOsFeatureEnabled - a read-only query to ntdll for one OS
+// feature flag's rollout state, by GetProcAddress (no injection: this never
+// writes to another process). nullopt when it cannot be determined (older
+// ntdll, or the query itself failing) - callers treat that as "off".
+std::optional<bool> IsOsFeatureEnabled(std::uint32_t feature_id) {
+    enum FEATURE_ENABLED_STATE {
+        FEATURE_ENABLED_STATE_DEFAULT = 0,
+        FEATURE_ENABLED_STATE_DISABLED = 1,
+        FEATURE_ENABLED_STATE_ENABLED = 2,
+    };
+#pragma pack(push, 1)
+    struct RTL_FEATURE_CONFIGURATION {
+        unsigned int featureId;
+        unsigned __int32 group : 4;
+        FEATURE_ENABLED_STATE enabledState : 2;
+        unsigned __int32 enabledStateOptions : 1;
+        unsigned __int32 unused1 : 1;
+        unsigned __int32 variant : 6;
+        unsigned __int32 variantPayloadKind : 2;
+        unsigned __int32 unused2 : 16;
+        unsigned int payload;
+    };
+#pragma pack(pop)
+    using Fn = int(NTAPI*)(UINT32, int, INT64*, RTL_FEATURE_CONFIGURATION*);
+    static Fn query = []() -> Fn {
+        HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+        return ntdll ? reinterpret_cast<Fn>(
+                           GetProcAddress(ntdll, "RtlQueryFeatureConfiguration"))
+                     : nullptr;
+    }();
+    if (!query) {
+        return std::nullopt;
     }
-    std::wstring path(appdata);
-    CoTaskMemFree(appdata);
-    path += L"\\TaskbarStyler\\config.json";
-    return path;
+    RTL_FEATURE_CONFIGURATION feature{};
+    INT64 change_stamp = 0;
+    if (query(feature_id, 1, &change_stamp, &feature) < 0) {
+        return std::nullopt;
+    }
+    switch (feature.enabledState) {
+        case FEATURE_ENABLED_STATE_DISABLED: return false;
+        case FEATURE_ENABLED_STATE_ENABLED: return true;
+        default: return std::nullopt;
+    }
 }
+
+void WINAPI RestoreThunk(void*) {
+    RestoreAllOnThisThread();
+}
+
+void WINAPI ReloadThunk(void*) {
+    ReloadThemeOnUiThread();
+}
+
+struct ReloadWatch {
+    HANDLE event = nullptr;
+    HANDLE wait = nullptr;
+};
+// Heap-leaked like g_session (Plano 2, Ruling 11): no namespace-scope
+// destructor runs at detach, so nothing here needs to survive one.
+auto* const g_reload = new std::atomic<ReloadWatch*>{nullptr};
+
+void CALLBACK OnReloadSignaled(void*, BOOLEAN) {
+    // Thread-pool thread: only hop to the UI thread here.
+    try {
+        HWND ui = GetTaskbarUiWnd();
+        if (!ui || !RunOnWindowThread(ui, ReloadThunk, nullptr)) {
+            STYLER_LOG(LogLevel::Error, L"reload: taskbar UI window not found");
+        }
+    } catch (...) {
+    }
+}
+
+}  // namespace
 
 HRESULT LoadConfiguredTheme() {
     styler::Config config;
@@ -114,6 +180,16 @@ HRESULT LoadConfiguredTheme() {
     std::filesystem::path file = std::filesystem::path(dir) / (config.theme + L".json");
     try {
         styler::Theme theme = styler::LoadThemeFromFile(file);
+        if (theme.os_feature_variant) {
+            const auto& v = *theme.os_feature_variant;
+            if (IsOsFeatureEnabled(v.feature_id).value_or(false) &&
+                ValidThemeId(v.theme_id)) {
+                STYLER_LOG(LogLevel::Info, L"feature %u on: using variant %s",
+                           v.feature_id, v.theme_id.c_str());
+                theme = styler::LoadThemeFromFile(
+                    std::filesystem::path(dir) / (v.theme_id + L".json"));
+            }
+        }
         auto prepared = std::make_shared<const styler::ResolvedTheme>(
             styler::PrepareTheme(theme));
         for (const auto& line : prepared->diagnostics) {
@@ -136,6 +212,95 @@ HRESULT LoadConfiguredTheme() {
     }
     SetTheme(nullptr);
     return E_FAIL;
+}
+
+void ReloadThemeOnUiThread() {
+    try {
+        STYLER_LOG(LogLevel::Info, L"reload requested");
+        // 1. Restore, on every thread that may hold state. This thread
+        //    first (direct call - it is the taskbar UI thread, the one
+        //    SetSite ran on), then each other host through its own message
+        //    loop.
+        RestoreAllOnThisThread();
+        for (HWND host : GetXamlHostWnds()) {
+            if (GetWindowThreadProcessId(host, nullptr) != GetCurrentThreadId()) {
+                RunOnWindowThread(host, RestoreThunk, nullptr);
+            }
+        }
+        // 2. Drop the subscription so the re-advise below re-floods.
+        //    Deferred means the advise thread is still inside
+        //    AdviseVisualTreeChange (change_subscription.h) - starting a
+        //    new subscription now would race it, and waiting for that
+        //    thread here would deadlock (it marshals its walk onto this
+        //    one). The config file is already written, so the next reload
+        //    signal picks it up once the old subscription settles on its
+        //    own.
+        StopResult stop_result = StopSubscription();
+        if (stop_result == StopResult::Deferred) {
+            STYLER_LOG(LogLevel::Info,
+                       L"reload ignored: previous subscription still "
+                       L"advising - retry in a moment");
+            return;
+        }
+        // 3. New theme (or none), then re-subscribe: the initial flood on
+        //    this thread applies it to everything already on screen.
+        LoadConfiguredTheme();
+        HRESULT hr = StartSubscription();
+        if (FAILED(hr)) {
+            STYLER_LOG(LogLevel::Error, L"reload: StartSubscription 0x%08X",
+                       static_cast<unsigned>(hr));
+        }
+        EngineStats stats = StatsForThisThread();
+        STYLER_LOG(LogLevel::Info,
+                   L"reload applied: %zu elements, %zu properties, %zu "
+                   L"failed, subscription 0x%08X",
+                   stats.styled_elements, stats.applied_properties,
+                   stats.failed_styles, static_cast<unsigned>(hr));
+    } catch (...) {
+        STYLER_LOG(LogLevel::Error, L"reload threw");
+    }
+}
+
+HRESULT StartReloadWatch() {
+    if (g_reload->load()) {
+        return S_FALSE;
+    }
+    auto* watch = new (std::nothrow) ReloadWatch{};
+    if (!watch) {
+        return E_OUTOFMEMORY;
+    }
+    watch->event = CreateEventW(nullptr, FALSE, FALSE, kReloadEventName);
+    if (!watch->event) {
+        HRESULT hr = HRESULT_FROM_WIN32(GetLastError());
+        delete watch;
+        return hr;
+    }
+    if (!RegisterWaitForSingleObject(&watch->wait, watch->event, OnReloadSignaled,
+                                     nullptr, INFINITE, WT_EXECUTEDEFAULT)) {
+        HRESULT hr = HRESULT_FROM_WIN32(GetLastError());
+        CloseHandle(watch->event);
+        delete watch;
+        return hr;
+    }
+    ReloadWatch* expected = nullptr;
+    if (!g_reload->compare_exchange_strong(expected, watch)) {
+        UnregisterWaitEx(watch->wait, INVALID_HANDLE_VALUE);
+        CloseHandle(watch->event);
+        delete watch;
+        return S_FALSE;
+    }
+    STYLER_LOG(LogLevel::Info, L"reload watch started");
+    return S_OK;
+}
+
+void StopReloadWatch() {
+    ReloadWatch* watch = g_reload->exchange(nullptr);
+    if (!watch) {
+        return;
+    }
+    UnregisterWaitEx(watch->wait, INVALID_HANDLE_VALUE);  // Waits for a running callback.
+    CloseHandle(watch->event);
+    delete watch;
 }
 
 }  // namespace styler::tap

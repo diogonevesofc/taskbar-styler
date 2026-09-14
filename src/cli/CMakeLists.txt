@@ -5,9 +5,10 @@ add_executable(taskbar_styler_cli
 target_include_directories(taskbar_styler_cli PRIVATE ..)
 set_target_properties(taskbar_styler_cli PROPERTIES OUTPUT_NAME "taskbar-styler")
 # Advapi32 for RegGetValueW (composition-diagnostics status), Shell32 for
-# ShellExecuteExW (the `setup` command's elevated reg.exe).
-target_link_libraries(taskbar_styler_cli PRIVATE taskbar_styler_tap_lib ole32
-  Advapi32.lib Shell32.lib)
+# ShellExecuteExW (the `setup` command's elevated reg.exe). styler_core for
+# config.h (apply/reset/status read and write config.json).
+target_link_libraries(taskbar_styler_cli PRIVATE taskbar_styler_tap_lib
+  styler_core ole32 Advapi32.lib Shell32.lib)
 
 if(MSVC)
   target_compile_options(taskbar_styler_cli PRIVATE /utf-8 /W4 /permissive-)
