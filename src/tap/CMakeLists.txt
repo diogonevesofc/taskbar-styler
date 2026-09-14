@@ -24,6 +24,7 @@ add_library(taskbar_styler_tap MODULE
   property_setter.cpp
   theme_session.cpp
   resource_variables.cpp
+  blur_effects.cpp
 )
 target_include_directories(taskbar_styler_tap PUBLIC ..)
 target_link_libraries(taskbar_styler_tap PRIVATE taskbar_styler_tap_lib)

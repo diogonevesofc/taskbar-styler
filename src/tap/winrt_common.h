@@ -27,12 +27,44 @@
 #include <winrt/Windows.UI.Xaml.Interop.h>
 #include <winrt/Windows.UI.ViewManagement.h>
 
+// Composition + the D2D effect interop, for the WindhawkBlur brush
+// (blur_effects.h, blur_brush.h). d2d1effects_2.h pulls d2d1effects_1.h and
+// d2d1effects.h (the CLSIDs and the property enums) but NOT d2d1_1.h, which
+// is where D2D1_COMPOSITE_MODE lives - measured: without the explicit
+// include, blur_effects.h fails with C3646 on CompositeEffect::Mode.
+// windows.graphics.effects.interop.h is the SDK's own declaration of
+// IGraphicsEffectD2D1Interop - the upstream mod redeclares it by hand only
+// because a Windhawk mod is a single file.
+#include <d2d1_1.h>
+#include <d2d1effects_2.h>
+#include <windows.graphics.effects.interop.h>
+
+#include <winrt/Windows.Graphics.Effects.h>
+#include <winrt/Windows.Storage.Streams.h>
+#include <winrt/Windows.System.Power.h>
+#include <winrt/Windows.UI.Composition.h>
+#include <winrt/Windows.UI.Xaml.Hosting.h>
+
+// Required for `.as<winrt::impl::abi_t<IPropertyValue>>()`, which is how an
+// IGraphicsEffectD2D1Interop::GetProperty implementation hands a boxed value
+// back across the ABI. Without it the cast does not compile
+// (vendor:12490-12493, confirmed by the plan's probe).
+template <>
+inline constexpr winrt::guid winrt::impl::guid_v<
+    winrt::impl::abi_t<winrt::Windows::Foundation::IPropertyValue>>{
+    winrt::impl::guid_v<winrt::Windows::Foundation::IPropertyValue>};
+
 namespace styler::tap {
 
 namespace wf = winrt::Windows::Foundation;
 namespace wux = winrt::Windows::UI::Xaml;
 namespace wuxc = winrt::Windows::UI::Xaml::Controls;
 namespace wuxm = winrt::Windows::UI::Xaml::Media;
+namespace wge = winrt::Windows::Graphics::Effects;
+namespace awge = ABI::Windows::Graphics::Effects;
+namespace wuc = winrt::Windows::UI::Composition;
+namespace wuxh = winrt::Windows::UI::Xaml::Hosting;
+namespace wss = winrt::Windows::Storage::Streams;
 
 // Wraps a WinRT object obtained from a raw diagnostics out-parameter without
 // touching its reference count: GetIInspectableFromHandle / GetUiLayer
