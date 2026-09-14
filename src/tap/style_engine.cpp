@@ -12,6 +12,7 @@
 
 #include <tap/log.h>
 #include <tap/property_setter.h>
+#include <tap/resource_variables.h>
 
 namespace styler::tap {
 namespace {
@@ -470,6 +471,7 @@ void OnElementAdded(ElementId id, wux::FrameworkElement const& element,
     if (!theme) {
         return;
     }
+    MergeResourceVariablesForThisThread(*theme);
     std::wstring reported = reported_type ? reported_type : L"";
     XamlElementView view(element, reported);
     std::vector<styler::RuleMatch> matches = styler::FindMatchingRules(*theme, view);
@@ -650,6 +652,7 @@ void RestoreAllOnThisThread() {
     }
     t_setter_cache.clear();
     t_cache_theme = nullptr;
+    UnmergeResourceVariablesForThisThread();
     STYLER_LOG(LogLevel::Info, L"restored %zu elements on thread %lu", ids.size(),
                GetCurrentThreadId());
     t_stats = EngineStats{};

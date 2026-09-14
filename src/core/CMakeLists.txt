@@ -9,6 +9,7 @@ add_library(styler_core STATIC
   blur_rewrite.cpp
   matcher.cpp
   config.cpp
+  resource_variables.cpp
 )
 
 target_include_directories(styler_core PUBLIC include)

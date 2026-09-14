@@ -23,6 +23,7 @@ add_library(taskbar_styler_tap MODULE
   style_engine.cpp
   property_setter.cpp
   theme_session.cpp
+  resource_variables.cpp
 )
 target_include_directories(taskbar_styler_tap PUBLIC ..)
 target_link_libraries(taskbar_styler_tap PRIVATE taskbar_styler_tap_lib)

@@ -11,6 +11,7 @@ add_executable(styler_core_tests
   test_corpus_resolution.cpp
   test_matcher.cpp
   test_config.cpp
+  test_resource_variables.cpp
 )
 
 target_link_libraries(styler_core_tests PRIVATE

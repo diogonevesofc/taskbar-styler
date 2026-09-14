@@ -23,7 +23,7 @@ Em desenvolvimento. O que já existe:
 - [x] `styler_core` — parsing de seletores, regras de estilo e temas
 - [x] 55 temas em JSON, com conversão provada sem perda byte a byte
 - [x] TAP que carrega no explorer e exporta a árvore visual
-- [ ] Aplicar e desfazer estilos (Plano 3)
+- [x] Aplicar e desfazer estilos (Plano 3)
 - [ ] O aplicativo de bandeja (Plano 4)
 
 ## Compilando
@@ -45,6 +45,26 @@ taskbar-styler load
 Escreve `%LOCALAPPDATA%\TaskbarStyler\visual-tree.txt` com a árvore da sua
 taskbar, no mesmo formato dos seletores dos temas. É com isso que você conserta
 um tema sozinho quando uma atualização do Windows renomeia algum elemento.
+
+## Uso
+
+```
+taskbar-styler load               carrega o TAP no explorer.exe
+taskbar-styler apply <ThemeId>    aplica um tema (ao vivo, se o TAP ja estiver carregado)
+taskbar-styler reset              desfaz o tema aplicado (ao vivo)
+taskbar-styler list               lista os temas disponiveis
+taskbar-styler status             mostra o estado (TAP carregado, tema configurado, composition diagnostics)
+taskbar-styler setup              grava DisableCompositionDiag=1 (precisa de administrador)
+```
+
+`apply` e `reset` escrevem `%APPDATA%\TaskbarStyler\config.json` e sinalizam
+um Event nomeado; se o TAP já estiver carregado no `explorer.exe`, o tema
+troca ao vivo, sem passar por `load` de novo. **Trocar de tema não reinicia o
+Explorer; descarregar o TAP, sim (spec §6.4).**
+
+O que ainda é aproximação (Plano 3b): `WindhawkBlur` vira `AcrylicBrush`
+(sem ruído e sem `BlurAmount`); capturas `=>` e valores `{{…}}` são pulados —
+o log de `theme …` diz quantos.
 
 ## Temas
 

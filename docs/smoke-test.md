@@ -40,3 +40,34 @@ Compile primeiro: `cmake --build build`.
 
 - [ ] reiniciar o Explorador pelo Gerenciador de Tarefas descarrega a DLL
 - [ ] `taskbar-styler status` depois disso não trava nem mente
+
+## Aplicar e desfazer (Plano 3)
+
+Pré-requisito: `cmake --build build`; Explorer reiniciado se a DLL estava carregada.
+
+1. `build\src\cli\taskbar-styler.exe list` — imprime 55 temas.
+2. `apply TranslucentTaskbar` — carrega o TAP; a linha `Rectangle#BackgroundStroke`
+   some e o fundo muda. Log: `theme TranslucentTaskbar: … prepared`,
+   `initial apply: … 0 failed`.
+3. `apply Lucent` (sem reiniciar o Explorer) — log `reload requested` …
+   `reload applied`; visual troca.
+4. Passe o mouse sobre um botão de app aberto: hover/press conforme o tema; ao
+   sair, volta. Com `"logLevel":"debug"` no config, cada troca loga
+   `apply <id> state '<Estado>'`.
+5. `reset` — taskbar padrão; **`BackgroundStroke` reaparece** (prova de que o
+   original foi restaurado).
+6. `apply Pills` — log `merged 6 resource variables`; alterne claro/escuro no
+   Windows: sem crash, cores acompanham.
+7. Segundo monitor (se houver): a taskbar dele também estiliza; log mostra
+   `initialized for thread` para a thread dela.
+8. Abra e feche o menu Iniciar, a central de notificações e o flyout de
+   configurações rápidas com um tema aplicado: sem crash; log mostra
+   `drained N handles, M held` após cada rajada.
+9. **Handles estáveis**: deixe a taskbar parada 10 minutos com tema aplicado.
+   A última linha `drained … M held` não deve mudar de M, e `released so far`
+   não deve crescer. Um M que cresce com a taskbar parada é vazamento — reporte
+   com o tema e o log.
+
+O que ainda é aproximação (Plano 3b): `WindhawkBlur` vira `AcrylicBrush`
+(sem ruído e sem `BlurAmount`); capturas `=>` e valores `{{…}}` são pulados —
+o log de `theme …` diz quantos.

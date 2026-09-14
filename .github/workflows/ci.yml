@@ -52,6 +52,7 @@ jobs:
         run: |
           test -f build/src/cli/TaskbarStyler.Tap.dll
           test -f build/src/cli/taskbar-styler.exe
+          test -f build/src/cli/themes/TranslucentTaskbar.json
 
       - name: Nenhuma API de injecao no codigo
         shell: bash
