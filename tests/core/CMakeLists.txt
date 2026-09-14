@@ -11,6 +11,7 @@ add_executable(styler_core_tests
   test_blur.cpp
   test_corpus_resolution.cpp
   test_matcher.cpp
+  test_style_expression.cpp
   test_config.cpp
   test_resource_variables.cpp
 )

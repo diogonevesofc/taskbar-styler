@@ -22,4 +22,24 @@ inline std::wstring_view Trim(std::wstring_view s) {
     return s.substr(first, last - first + 1);
 }
 
+// Recognizes `<WindhawkBlur ...` or its `<Blur ...` synonym (spec section
+// 5.3) at the front of an already-trimmed value - the same test both
+// ParseWindhawkBlur and RewriteWindhawkBlur need, so it lives here instead
+// of being copy-pasted in blur.cpp and blur_rewrite.cpp. Matched only when
+// the tag name is followed by a space, '/' or '>', so `<BlurFoo` does not
+// falsely match `<Blur`. Returns the tag body starting right after the tag
+// name (always non-empty when matched, since a self-closing or opening tag
+// needs at least that one delimiter character); empty when `s` is not a
+// blur element at all.
+inline std::wstring_view MatchBlurTagBody(std::wstring_view s) {
+    for (std::wstring_view tag : {L"<WindhawkBlur", L"<Blur"}) {
+        if (s.starts_with(tag) && s.size() > tag.size() &&
+            (s[tag.size()] == L' ' || s[tag.size()] == L'/' ||
+             s[tag.size()] == L'>')) {
+            return s.substr(tag.size());
+        }
+    }
+    return {};
+}
+
 }  // namespace styler::detail

@@ -2,26 +2,15 @@
 #include <styler/blur.h>
 
 #include <algorithm>
-#include <array>
 #include <cstdlib>
-#include <stdexcept>
+#include <vector>
 
 #include <styler/selector.h>  // ParseError
 
+#include "detail/text.h"
+
 namespace styler {
 namespace {
-
-std::wstring_view Trim(std::wstring_view s) {
-    while (!s.empty() && (s.front() == L' ' || s.front() == L'\t' ||
-                          s.front() == L'\r' || s.front() == L'\n')) {
-        s.remove_prefix(1);
-    }
-    while (!s.empty() && (s.back() == L' ' || s.back() == L'\t' ||
-                          s.back() == L'\r' || s.back() == L'\n')) {
-        s.remove_suffix(1);
-    }
-    return s;
-}
 
 // Narrows each wchar_t to its low byte: attribute names and XML syntax in
 // this domain are ASCII, and the message round-trips through Utf8ToWide at
@@ -166,8 +155,8 @@ std::wstring_view ThemeResourceKey(std::wstring_view value) {
     if (!value.starts_with(kPrefix) || !value.ends_with(L"}")) {
         return {};
     }
-    std::wstring_view key =
-        Trim(value.substr(kPrefix.size(), value.size() - kPrefix.size() - 1));
+    std::wstring_view key = detail::Trim(
+        value.substr(kPrefix.size(), value.size() - kPrefix.size() - 1));
     if (key.empty()) {
         Fail(L"empty theme resource key", value);
     }
@@ -177,19 +166,9 @@ std::wstring_view ThemeResourceKey(std::wstring_view value) {
 }  // namespace
 
 std::optional<BlurSpec> ParseWindhawkBlur(std::wstring_view value) {
-    std::wstring_view s = Trim(value);
-    std::wstring_view body;
-    bool matched = false;
-    for (std::wstring_view tag : {L"<WindhawkBlur", L"<Blur"}) {
-        if (s.starts_with(tag) && s.size() > tag.size() &&
-            (s[tag.size()] == L' ' || s[tag.size()] == L'/' ||
-             s[tag.size()] == L'>')) {
-            body = s.substr(tag.size());
-            matched = true;
-            break;
-        }
-    }
-    if (!matched) {
+    std::wstring_view s = detail::Trim(value);
+    std::wstring_view body = detail::MatchBlurTagBody(s);
+    if (body.empty()) {
         return std::nullopt;
     }
     if (!body.ends_with(L"/>")) {

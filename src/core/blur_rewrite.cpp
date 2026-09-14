@@ -3,18 +3,10 @@
 
 #include <array>
 
+#include "detail/text.h"
+
 namespace styler {
 namespace {
-
-std::wstring_view Trim(std::wstring_view s) {
-    while (!s.empty() && (s.front() == L' ' || s.front() == L'\t')) {
-        s.remove_prefix(1);
-    }
-    while (!s.empty() && (s.back() == L' ' || s.back() == L'\t')) {
-        s.remove_suffix(1);
-    }
-    return s;
-}
 
 // Returns the `Name="..."` attribute text (including the quotes) or empty.
 std::wstring_view FindAttribute(std::wstring_view body,
@@ -41,19 +33,9 @@ std::wstring_view FindAttribute(std::wstring_view body,
 
 std::wstring RewriteWindhawkBlur(std::wstring_view value, bool* rewritten) {
     *rewritten = false;
-    std::wstring_view s = Trim(value);
-    std::wstring_view body;
-    bool matched = false;
-    for (std::wstring_view tag : {L"<WindhawkBlur", L"<Blur"}) {
-        if (s.starts_with(tag) && s.size() > tag.size() &&
-            (s[tag.size()] == L' ' || s[tag.size()] == L'/' ||
-             s[tag.size()] == L'>')) {
-            body = s.substr(tag.size());
-            matched = true;
-            break;
-        }
-    }
-    if (!matched) {
+    std::wstring_view s = detail::Trim(value);
+    std::wstring_view body = detail::MatchBlurTagBody(s);
+    if (body.empty()) {
         return std::wstring(value);
     }
     if (body.ends_with(L"/>")) {

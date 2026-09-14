@@ -196,7 +196,7 @@ TEST_CASE("a visual state group on the leaf or an ancestor is reported with its 
     CHECK(vsg->ancestor_depth == 2);
 }
 
-TEST_CASE("PrepareTheme expands types, applies constants, rewrites blur, skips the unsupported") {
+TEST_CASE("PrepareTheme expands types, applies constants, rewrites blur, marks the dynamic") {
     Theme theme;
     theme.id = L"T";
     theme.constants = {{L"Bg", L"<WindhawkBlur BlurAmount=\"18\" TintColor=\"#25323232\"/>"}};
@@ -219,14 +219,21 @@ TEST_CASE("PrepareTheme expands types, applies constants, rewrites blur, skips t
     REQUIRE(rule.chains.size() == 1);
     CHECK(rule.chains[0][0].type == L"Windows.UI.Xaml.Controls.Grid");
     CHECK(rule.chains[0][1].type == L"Windows.UI.Xaml.Shapes.Rectangle");
-    REQUIRE(rule.styles.size() == 2);
+    REQUIRE(rule.styles.size() == 3);
     CHECK(rule.styles[0].property == L"Fill");
     CHECK(rule.styles[0].is_xaml);
     CHECK(rule.styles[0].value == L"<AcrylicBrush TintColor=\"#25323232\"/>");
+    CHECK_FALSE(rule.styles[0].dynamic);
     CHECK(rule.styles[1].property == L"Visibility");
     CHECK_FALSE(rule.styles[1].is_xaml);
+    CHECK_FALSE(rule.styles[1].dynamic);
+    // Width=>W is a CaptureRule (skipped_captures); Height={{W}} is the one
+    // dynamic style left - Task 6 is what expands it per element.
+    CHECK(rule.styles[2].property == L"Height");
+    CHECK(rule.styles[2].value == L"{{W}}");
+    CHECK(rule.styles[2].dynamic);
     CHECK(prepared.skipped_captures == 1);
-    CHECK(prepared.skipped_dynamic == 1);
+    CHECK(prepared.dynamic_values == 1);
     // Plano 3b/Task 2: $Bg's own text is a well-formed <WindhawkBlur>, so it
     // now parses into a real BlurSpec (blur_specs) instead of only getting
     // the AcrylicBrush approximation (blur_approximations, pre-Task-2).
@@ -237,14 +244,19 @@ TEST_CASE("PrepareTheme expands types, applies constants, rewrites blur, skips t
     CHECK(rule.styles[0].blur->tint.a == 0x25);
     CHECK(prepared.resource_variables.at(L"Accent") ==
           L"<AcrylicBrush TintColor=\"#25323232\"/>");
-    CHECK(prepared.diagnostics.size() == 2);
+    // Only the capture is diagnosed at preparation time now - the dynamic
+    // value is not an error, just deferred to the engine (Task 6).
+    CHECK(prepared.diagnostics.size() == 1);
 }
 
-TEST_CASE("a constant that resolves to a dynamic marker is skipped, not applied literally") {
+TEST_CASE("a constant that resolves to a dynamic marker is marked dynamic, not applied literally") {
     // Pills.json's `taskbarFill`/`taskbarStrokeColor` are exactly this:
     // `"{{__unset}}"`, meant as "leave this alone" (upstream vendor:400-404),
     // but hidden behind a $constant so the raw style text ("Fill:=$Unset")
-    // never looks dynamic on its own - only the resolved value does.
+    // never looks dynamic on its own - only the resolved value does. Skipping
+    // it (the bare `{{__unset}}` has no defined variable) is
+    // ExpandStyleVariables's job at the Task 6 per-element stage, not
+    // PrepareTheme's - here it is only marked dynamic and kept.
     Theme theme;
     theme.id = L"T";
     theme.constants = {{L"Unset", L"{{__unset}}"}};
@@ -256,8 +268,11 @@ TEST_CASE("a constant that resolves to a dynamic marker is skipped, not applied 
     theme.rules = {r1};
 
     auto prepared = PrepareTheme(theme);
-    CHECK(prepared.rules.empty());  // The rule's only style was skipped.
-    CHECK(prepared.skipped_dynamic == 1);
+    REQUIRE(prepared.rules.size() == 1);
+    REQUIRE(prepared.rules[0].styles.size() == 1);
+    CHECK(prepared.rules[0].styles[0].dynamic);
+    CHECK(prepared.rules[0].styles[0].value == L"{{__unset}}");
+    CHECK(prepared.dynamic_values == 1);
 }
 
 TEST_CASE("FindMatchingRules returns the last matching rule first") {

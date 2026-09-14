@@ -28,6 +28,11 @@ struct PreparedStyle {
     // usable as-is; the TAP prefers `blur` and only parses `value` when the
     // real brush cannot be built.
     std::optional<BlurSpec> blur;
+    // True when `value` still contains `{{ ... }}`. The value cannot be
+    // resolved at preparation time - it depends on live captured properties -
+    // so the engine expands it per element and re-expands it whenever a
+    // variable it depends on changes.
+    bool dynamic = false;
 };
 
 struct PreparedRule {
@@ -43,8 +48,12 @@ struct ResolvedTheme {
     std::map<std::wstring, std::wstring> resource_variables;
     std::vector<std::wstring> diagnostics;  // Theme's own + what was skipped.
     int skipped_captures = 0;     // `Prop=>Var` - Plano 3b.
-    int skipped_dynamic = 0;      // `{{Var}}` values - Plano 3b.
-    int blur_specs = 0;           // `<WindhawkBlur>` values parsed for the real brush.
+    int dynamic_values = 0;       // `{{Var}}` values left for the engine - Plano 3b/5.
+    // Distinct blur SOURCES parsed into a real BlurSpec: once per constant
+    // whose own value is a `<WindhawkBlur>`/`<Blur>` tag, once per inline
+    // style that writes the tag itself - not a count of styles using the
+    // resulting brush (a constant reused by many rules is still one source).
+    int blur_specs = 0;
     int blur_approximations = 0;  // Blur values that only got the AcrylicBrush rewrite.
 };
 

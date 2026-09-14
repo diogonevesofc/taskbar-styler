@@ -9,6 +9,8 @@
 #include <styler/type_name.h>
 #include <styler/utf.h>
 
+#include "detail/text.h"
+
 namespace styler {
 namespace {
 
@@ -243,13 +245,21 @@ ResolvedTheme PrepareTheme(const Theme& theme) {
             // "leave this alone" (vendor:400-404).
             p.value = ApplyStyleConstants(v.value, constants);
             if (p.value.find(L"{{") != std::wstring::npos) {
-                ++out.skipped_dynamic;
-                out.diagnostics.push_back(theme.id + L": " + src.target + L": " +
-                                          v.property_name +
-                                          L": dynamic value skipped (Plano 3b)");
-                continue;
+                // Left for the engine: the value depends on live captured
+                // properties, so it is expanded per element (Task 6) and
+                // re-expanded on every change. Constants are substituted
+                // FIRST (found in the Plano 3 review): Pills hides
+                // `{{__unset}}` inside a $constant, and checking the raw text
+                // would miss it.
+                p.dynamic = true;
+                ++out.dynamic_values;
             }
-            if (p.is_xaml) {
+            // A dynamic value is never blur-parsed here: a `<WindhawkBlur>`
+            // with `{{...}}` inside does not occur in the corpus, and
+            // ResolveSetter's cached-by-PreparedStyle* blur/value would be
+            // the wrong one once the engine (Task 6) starts expanding it
+            // per element - p.blur must stay unset for it.
+            if (p.is_xaml && !p.dynamic) {
                 try {
                     // The constants pass above already rewrote any blur that
                     // came in through a $Constant, so parse the ORIGINAL text
@@ -277,12 +287,7 @@ ResolvedTheme PrepareTheme(const Theme& theme) {
                         // counted once, above, at the constant - counting it
                         // again for every rule that reuses the constant
                         // would inflate blur_specs by however many rules do.
-                        std::wstring_view trimmed = v.value;
-                        while (!trimmed.empty() &&
-                              (trimmed.front() == L' ' || trimmed.front() == L'\t')) {
-                            trimmed.remove_prefix(1);
-                        }
-                        if (trimmed.starts_with(L"<")) {
+                        if (detail::Trim(v.value).starts_with(L"<")) {
                             ++out.blur_specs;
                         }
                     } else {

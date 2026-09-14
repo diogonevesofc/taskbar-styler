@@ -9,6 +9,7 @@ add_library(styler_core STATIC
   blur_rewrite.cpp
   blur.cpp
   matcher.cpp
+  style_expression.cpp
   config.cpp
   resource_variables.cpp
 )

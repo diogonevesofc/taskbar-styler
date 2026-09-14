@@ -2,9 +2,7 @@
 #include <doctest/doctest.h>
 
 #include <filesystem>
-#include <fstream>
 
-#include <nlohmann/json.hpp>
 #include <styler/blur.h>
 #include <styler/matcher.h>
 #include <styler/theme_loader.h>
@@ -110,7 +108,8 @@ TEST_CASE("every blur in the shipped corpus parses") {
     CHECK(themes_with_blur == 32);
     // Measured, not the brief's estimated 272 - see task-2-report.md for the
     // two concrete causes: (1) an alias constant whose own value is another
-    // `$Name` (Command_Center's and WindowGlass*'s "Background") resolves,
+    // `$Name` (Command_Center's, FrostedAcrylic's and WindowGlass*'s
+    // "Background", 5 distinct constants counted) resolves,
     // after ResolveConstants's nested-constant expansion, to a second
     // independent blur tag under a different name, and PrepareTheme counts
     // once per distinct constant name - correctly one MORE than counting
