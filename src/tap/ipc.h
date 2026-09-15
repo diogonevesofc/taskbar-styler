@@ -13,6 +13,7 @@ namespace styler::tap {
 // Auto-reset event. The TAP creates it at SetSite and waits on it; a writer
 // sets it after rewriting config.json. Local\ scopes it to the session.
 constexpr wchar_t kReloadEventName[] = L"Local\\TaskbarStyler.Reload";
+constexpr wchar_t kExportEventName[] = L"Local\\TaskbarStyler.ExportTree";
 
 // %APPDATA%\TaskbarStyler\config.json (spec section 4.2). Empty when the
 // folder cannot be resolved.

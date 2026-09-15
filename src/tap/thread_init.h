@@ -4,6 +4,8 @@
 #include <windows.h>
 
 #include <vector>
+#include <cstdint>
+#include <memory>
 
 namespace styler::tap {
 
@@ -30,16 +32,23 @@ using ThreadProc = void(WINAPI*)(void* parameter);
 // therefore never point at storage the caller could free in the
 // meantime - every current caller passes nullptr.
 bool RunOnWindowThread(HWND hWnd, ThreadProc proc, void* param);
+bool RunOwnedOnWindowThread(HWND hWnd, ThreadProc proc, std::shared_ptr<void> parameter);
+// Snapshot cleanup needs a return address even on surfaces outside styling's
+// scope. Creating this window does not mark the thread initialized for styles.
+HWND EnsureDispatchWindowForCurrentThread();
 
 void InitializeForCurrentThread();
 void UninitializeForCurrentThread();
 bool IsInitializedForCurrentThread();
+using CommandHandler = void (*)(unsigned command, std::uint64_t generation);
+HWND SetCommandHandlerForCurrentThread(CommandHandler handler);
+bool PostThreadCommand(HWND window, unsigned command, std::uint64_t generation);
 
 // SetWinEventHook on EVENT_OBJECT_CREATE, filtered to this process. The OS
 // tells us when a new window appears, so we never patch CreateWindowExW the way
 // upstream does. This is the last place a code patch could have crept in - see
 // spec section 6.2.
-void StartHostWatch();
-void StopHostWatch();
+bool StartHostWatch();
+bool StopHostWatch();
 
 }  // namespace styler::tap

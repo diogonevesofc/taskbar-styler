@@ -8,6 +8,7 @@
 #include <memory>
 #include <new>
 #include <optional>
+#include <mutex>
 #include <sstream>
 #include <system_error>
 
@@ -15,6 +16,10 @@
 #include <styler/matcher.h>
 #include <styler/theme_loader.h>
 #include <tap/change_subscription.h>
+#include <tap/command_mailbox.h>
+#include <tap/release_queue.h>
+#include <tap/tree_export.h>
+#include <tap/site.h>
 #include <tap/ipc.h>
 #include <tap/log.h>
 #include <tap/style_engine.h>
@@ -102,35 +107,126 @@ void WINAPI RestoreThunk(void*) {
     }
 }
 
-void WINAPI ReloadThunk(void*) {
-    ReloadThemeOnUiThread();
-}
-
-struct ReloadWatch {
+constexpr unsigned kReloadCommand = 1;
+constexpr unsigned kExportCommand = 2;
+constexpr unsigned kContinueCommand = 4;
+constexpr unsigned kSiteCommand = 8;
+auto* const g_mailbox = new CommandMailbox;
+std::atomic<HWND> g_command_window{nullptr};
+struct SiteRequest {
+    std::uint64_t version = 0;
+    std::shared_ptr<IUnknown> site;
+};
+auto* const g_site_request = new std::atomic<std::shared_ptr<SiteRequest>>;
+auto* const g_site_request_mutex = new std::mutex;
+std::uint64_t g_site_version = 0;
+struct CommandEvent {
     HANDLE event = nullptr;
     HANDLE wait = nullptr;
+    std::uint64_t generation = 0;
+    unsigned command = 0;
 };
-// Heap-leaked like g_session (Plano 2, Ruling 11): no namespace-scope
-// destructor runs at detach, so nothing here needs to survive one.
+struct ReloadWatch { CommandEvent reload; CommandEvent export_tree; };
 auto* const g_reload = new std::atomic<ReloadWatch*>{nullptr};
+std::atomic<bool> g_export_running{false};
+std::atomic<bool> g_exporting_tree{false};
+std::atomic<HRESULT> g_export_result{S_OK};
+std::atomic<std::uint64_t> g_drain_generation{0};
+std::atomic<bool> g_drain_failed{false};
+thread_local bool t_pending_transition = false;
+thread_local bool t_export_requested = false;
+thread_local bool t_driving = false;
+thread_local std::uint64_t t_site_version = 0;
+thread_local std::uint64_t t_command_revision = 0;
 
-void CALLBACK OnReloadSignaled(void*, BOOLEAN) {
-    // Thread-pool thread: only hop to the UI thread here.
+void PostCommand(unsigned command, std::uint64_t generation) noexcept {
     try {
-        HWND ui = GetTaskbarUiWnd();
-        if (!ui) {
-            STYLER_LOG(LogLevel::Error, L"reload: taskbar UI window not found");
-        } else {
-            // A false return here means RunOnWindowThread already logged the
-            // accurate reason itself (e.g. the timeout it reports on
-            // SendMessageTimeoutW) - a second, less specific line on top of
-            // it would only obscure that reason.
-            RunOnWindowThread(ui, ReloadThunk, nullptr);
+        if (g_mailbox->Push(generation, command) &&
+            !PostThreadCommand(g_command_window.load(), 0, generation)) {
+            g_mailbox->PostFailed(generation);
+            STYLER_LOG(LogLevel::Error, L"posting TAP command failed");
         }
     } catch (...) {
     }
 }
-
+void NotifyContinuation() noexcept {
+    try {
+        PostCommand(kContinueCommand, g_mailbox->generation());
+    } catch (...) {
+    }
+}
+void CALLBACK OnCommandSignaled(void* context, BOOLEAN) {
+    // No COM, no synchronous send, and no UI dependency in this callback.
+    try {
+        const auto* event = static_cast<CommandEvent*>(context);
+        PostCommand(event->command, event->generation);
+    } catch (...) {
+    }
+}
+void DriveTransition();
+void OnCommand(unsigned, std::uint64_t generation) {
+    const unsigned commands = g_mailbox->Take(generation);
+    if (!commands) return;
+    if (commands & (kReloadCommand | kSiteCommand | kExportCommand)) {
+        t_pending_transition = true;
+        ++t_command_revision;
+    }
+    if ((commands & kExportCommand) && !g_exporting_tree.load()) t_export_requested = true;
+    if (commands & kReloadCommand) STYLER_LOG(LogLevel::Info, L"reload requested");
+    DriveTransition();
+}
+void WINAPI InitializeControl(void*) {
+    const HWND window = SetCommandHandlerForCurrentThread(OnCommand);
+    g_command_window.store(window);
+    if (window) StartReloadWatch();
+}
+void WINAPI InitializeHost(void*) { InitializeForCurrentThread(); }
+void WINAPI DrainThread(void* encoded_generation) {
+    const auto generation = reinterpret_cast<std::uintptr_t>(encoded_generation);
+    if (generation != g_drain_generation.load() || CurrentTheme()) return;
+    if (!StopReleaseQueueOnThisThread()) g_drain_failed.store(true);
+}
+bool DrainAllThreads() {
+    const auto generation = g_drain_generation.fetch_add(1) + 1;
+    g_drain_failed.store(false);
+    auto* encoded = reinterpret_cast<void*>(static_cast<std::uintptr_t>(generation));
+    DrainThread(encoded);
+    bool dispatched = true;
+    for (HWND window : GetInitializedThreadWnds()) {
+        if (GetWindowThreadProcessId(window, nullptr) != GetCurrentThreadId() &&
+            !RunOnWindowThread(window, DrainThread, encoded)) dispatched = false;
+    }
+    return dispatched && !g_drain_failed.load();
+}
+void StartExportWorker(bool export_tree) {
+    g_exporting_tree.store(export_tree);
+    g_export_running.store(true);
+    g_export_result.store(S_OK);
+    HANDLE thread = CreateThread(nullptr, 0, [](void* parameter) -> DWORD {
+        HRESULT hr = E_FAIL;
+        try {
+            hr = parameter ? ExportTreeToFile(StylerDataDir() + L"\\visual-tree.txt")
+                           : StopPendingSnapshot();
+        } catch (...) {
+            STYLER_LOG(LogLevel::Error, L"export worker threw");
+        }
+        if (SUCCEEDED(hr) && SnapshotNeedsStop()) hr = E_FAIL;
+        g_export_result.store(hr);
+        g_export_running.store(false);
+        g_exporting_tree.store(false);
+        NotifyContinuation();
+        return 0;
+    }, export_tree ? reinterpret_cast<void*>(1) : nullptr, 0, nullptr);
+    if (!thread) {
+        g_export_running.store(false);
+        g_exporting_tree.store(false);
+        g_export_result.store(HRESULT_FROM_WIN32(GetLastError()));
+        t_pending_transition = false;
+        STYLER_LOG(LogLevel::Error, L"cannot start export worker");
+    } else {
+        CloseHandle(thread);
+    }
+}
 }  // namespace
 
 HRESULT LoadConfiguredTheme() {
@@ -252,104 +348,197 @@ bool RestoreThemeOnAllThreads() {
     return complete;
 }
 
-void ReloadThemeOnUiThread() {
+namespace {
+void DriveTransition() {
+    if (!t_pending_transition || t_driving || g_export_running.load()) return;
+    const auto command_revision = t_command_revision;
+    t_driving = true;
+    struct End { ~End() { t_driving = false; } } end;
     try {
-        STYLER_LOG(LogLevel::Info, L"reload requested");
-        // 0. Take the outgoing theme off before touching anything else.
-        //    CurrentTheme() has exactly one reader (style_engine.cpp's
-        //    OnElementAdded), so this makes every element re-reported as a
-        //    side effect of the restore below - measured happening
-        //    synchronously, on this same thread, while unapplying a
-        //    property - inert instead of getting freshly styled with the
-        //    theme that is on its way out (found in review: those
-        //    re-reports land before LoadConfiguredTheme's own
-        //    SetTheme(nullptr)/SetTheme(new) runs below, so without this
-        //    they are matched against the OLD theme and never make it into
-        //    RestoreAllOnThisThread's own snapshot - they survive, holding
-        //    their handles, until some later reload happens to catch them).
-        //    Doing this first also makes a Deferred return, just below,
-        //    coherent: the taskbar ends up fully restored either way, never
-        //    left mid-style with a theme that is no longer installed.
-        // 1. Restore all initialized threads, even when TaskView/flyouts
-        //    have destroyed their host HWNDs but retained their XAML state.
-        if (!RestoreThemeOnAllThreads()) {
+        // All transitions run on this one UI thread. Worker completions only
+        // post messages; no wait blocks the UI needed by Advise's flood.
+        if (!RestoreThemeOnAllThreads() || !StopHostWatch()) {
+            t_pending_transition = false;
             return;
         }
-        // 2. Drop the subscription so the re-advise below re-floods.
-        //    Deferred means the advise thread is still inside
-        //    AdviseVisualTreeChange (change_subscription.h) - starting a
-        //    new subscription now would race it, and waiting for that
-        //    thread here would deadlock (it marshals its walk onto this
-        //    one). The config file is already written, so the next reload
-        //    signal picks it up once the old subscription settles on its
-        //    own.
-        StopResult stop_result = StopSubscription();
-        if (stop_result == StopResult::Deferred) {
-            STYLER_LOG(LogLevel::Info,
-                       L"reload ignored: previous subscription still "
-                       L"advising - retry in a moment");
+        const auto stopped = StopSubscription();
+        if (stopped == StopResult::Deferred) return;
+        if (stopped == StopResult::Failed) {
+            t_pending_transition = false;
             return;
         }
-        // 3. New theme (or none), then re-subscribe: the initial flood on
-        //    this thread applies it to everything already on screen.
-        LoadConfiguredTheme();
-        HRESULT hr = StartSubscription();
+        if (SnapshotNeedsStop()) {
+            if (FAILED(g_export_result.exchange(S_OK))) {
+                t_pending_transition = false;
+                STYLER_LOG(LogLevel::Error, L"snapshot cleanup incomplete; explicit retry required");
+                return;
+            }
+            StartExportWorker(false);
+            return;
+        }
+        if (!DrainAllThreads()) {
+            t_pending_transition = false;
+            STYLER_LOG(LogLevel::Error, L"transition incomplete: retained releases or thread timeout; retry required");
+            return;
+        }
+        auto request = g_site_request->load();
+        if (request && (request->version != t_site_version ||
+                        (request->site && !AcquireSession()))) {
+            CloseDiagnostics();
+            t_site_version = request->version;
+            if (request->site) {
+                const HRESULT hr = OpenDiagnostics(request->site.get());
+                if (FAILED(hr)) {
+                    t_pending_transition = false;
+                    STYLER_LOG(LogLevel::Error, L"OpenDiagnostics failed 0x%08X", static_cast<unsigned>(hr));
+                    return;
+                }
+                // Preserve the CLI load contract, with a worker so the UI
+                // remains free to process the synchronous snapshot flood.
+                t_export_requested = true;
+            }
+        }
+        if (!request || !request->site) {
+            const auto latest = g_site_request->load();
+            if ((latest && latest->version != t_site_version) ||
+                t_command_revision != command_revision) {
+                PostCommand(kContinueCommand, g_mailbox->generation());
+                return;
+            }
+            t_pending_transition = false;
+            t_export_requested = false;
+            StopReloadWatch();
+            LogHandleObservation();
+            STYLER_LOG(LogLevel::Info, L"TAP detached: no subscription, host hook or release timer");
+            return;
+        }
+        if (!AcquireSession()) {
+            t_pending_transition = false;
+            return;
+        }
+        if (t_export_requested) {
+            t_export_requested = false;
+            StartExportWorker(true);
+            return;
+        }
+        const HRESULT export_result = g_export_result.exchange(S_OK);
+        if (FAILED(export_result)) {
+            STYLER_LOG(LogLevel::Error, L"export failed 0x%08X", static_cast<unsigned>(export_result));
+        }
+        const HRESULT theme_result = LoadConfiguredTheme();
+        // A SetSite/config command reentered while restoring/reading XAML.
+        // Never publish the outgoing work as final; process the latest request.
+        const auto latest = g_site_request->load();
+        if ((latest && latest->version != t_site_version) ||
+            t_command_revision != command_revision ||
+            (g_mailbox->Pending(g_mailbox->generation()) &
+                (kReloadCommand | kExportCommand | kSiteCommand))) {
+            PostCommand(kContinueCommand, g_mailbox->generation());
+            return;
+        }
+        t_pending_transition = false;
+        if (FAILED(theme_result) || !CurrentTheme()) {
+            LogHandleObservation();
+            STYLER_LOG(LogLevel::Info, L"TAP inactive: no subscription, host hook or release timer");
+            return;
+        }
+        for (HWND host : GetXamlHostWnds()) {
+            if (!RunOnWindowThread(host, InitializeHost, nullptr)) {
+                SetTheme(nullptr);
+                STYLER_LOG(LogLevel::Error, L"apply deferred: host initialization incomplete");
+                return;
+            }
+        }
+        if (!StartHostWatch()) {
+            SetTheme(nullptr);
+            STYLER_LOG(LogLevel::Error, L"apply failed: host watch unavailable");
+            return;
+        }
+        const HRESULT hr = StartSubscription();
         if (FAILED(hr)) {
-            STYLER_LOG(LogLevel::Error, L"reload: StartSubscription 0x%08X",
-                       static_cast<unsigned>(hr));
+            SetTheme(nullptr);
+            StopHostWatch();
+            STYLER_LOG(LogLevel::Error, L"StartSubscription failed 0x%08X", static_cast<unsigned>(hr));
         }
-        // No "reload applied: N elements" line here on purpose: reading
-        // EngineStats now would always read zero, the same reason SetSite
-        // never logs it either (tap_boundary.cpp's comment) - the flood is
-        // XAML marshalling onto this thread, which cannot run until this
-        // function returns to the message loop. RestoreAllOnThisThread just
-        // above rearmed release_queue.cpp's first-drain log, so the real
-        // count is one "apply (as of first drain)" log line away instead.
+    } catch (winrt::hresult_error const& ex) {
+        t_pending_transition = false;
+        STYLER_LOG(LogLevel::Error, L"transition hresult 0x%08X", static_cast<unsigned>(ex.code()));
     } catch (...) {
-        STYLER_LOG(LogLevel::Error, L"reload threw");
+        t_pending_transition = false;
+        STYLER_LOG(LogLevel::Error, L"transition threw");
     }
+}
+}  // namespace
+
+void RequestSessionChange(std::shared_ptr<IUnknown> site) {
+    auto request = std::make_shared<SiteRequest>();
+    request->site = std::move(site);
+    std::shared_ptr<SiteRequest> previous;
+    {
+        std::lock_guard lock(*g_site_request_mutex);
+        request->version = ++g_site_version;
+        previous = g_site_request->exchange(request);
+    }
+    HWND ui = GetTaskbarUiWnd();
+    if (!ui || !RunOnWindowThread(ui, InitializeControl, nullptr)) {
+        STYLER_LOG(LogLevel::Error, L"cannot initialize TAP command window; session request retained");
+        return;
+    }
+    PostCommand(kSiteCommand, g_mailbox->generation());
+}
+
+std::shared_ptr<IUnknown> AcquireSite() {
+    const auto request = g_site_request->load();
+    return request ? request->site : nullptr;
 }
 
 HRESULT StartReloadWatch() {
-    if (g_reload->load()) {
-        return S_FALSE;
-    }
-    auto* watch = new (std::nothrow) ReloadWatch{};
-    if (!watch) {
-        return E_OUTOFMEMORY;
-    }
-    watch->event = CreateEventW(nullptr, FALSE, FALSE, kReloadEventName);
-    if (!watch->event) {
-        HRESULT hr = HRESULT_FROM_WIN32(GetLastError());
+    if (g_reload->load()) return S_FALSE;
+    const auto window = g_command_window.load();
+    if (!window) return E_NOT_VALID_STATE;
+    auto* watch = new (std::nothrow) ReloadWatch;
+    if (!watch) return E_OUTOFMEMORY;
+    const auto generation = g_mailbox->Restart();
+    auto create = [&](CommandEvent& event, const wchar_t* name, unsigned command) {
+        event.generation = generation;
+        event.command = command;
+        event.event = CreateEventW(nullptr, FALSE, FALSE, name);
+        return event.event && RegisterWaitForSingleObject(&event.wait, event.event,
+            OnCommandSignaled, &event, INFINITE, WT_EXECUTEDEFAULT);
+    };
+    if (!create(watch->reload, kReloadEventName, kReloadCommand) ||
+        !create(watch->export_tree, kExportEventName, kExportCommand)) {
+        const HRESULT hr = HRESULT_FROM_WIN32(GetLastError());
+        for (auto* event : {&watch->reload, &watch->export_tree}) {
+            if (event->wait) UnregisterWaitEx(event->wait, INVALID_HANDLE_VALUE);
+            if (event->event) CloseHandle(event->event);
+        }
         delete watch;
         return hr;
     }
-    if (!RegisterWaitForSingleObject(&watch->wait, watch->event, OnReloadSignaled,
-                                     nullptr, INFINITE, WT_EXECUTEDEFAULT)) {
-        HRESULT hr = HRESULT_FROM_WIN32(GetLastError());
-        CloseHandle(watch->event);
-        delete watch;
-        return hr;
-    }
-    ReloadWatch* expected = nullptr;
-    if (!g_reload->compare_exchange_strong(expected, watch)) {
-        UnregisterWaitEx(watch->wait, INVALID_HANDLE_VALUE);
-        CloseHandle(watch->event);
-        delete watch;
-        return S_FALSE;
-    }
-    STYLER_LOG(LogLevel::Info, L"reload watch started");
+    g_reload->store(watch);
+    SetSubscriptionCompletion(NotifyContinuation);
+    STYLER_LOG(LogLevel::Info, L"passive reload/export command watches started");
     return S_OK;
 }
 
 void StopReloadWatch() {
-    ReloadWatch* watch = g_reload->exchange(nullptr);
-    if (!watch) {
+    g_mailbox->Restart();
+    auto* watch = g_reload->exchange(nullptr);
+    if (!watch) return;
+    bool stopped = true;
+    for (auto* event : {&watch->reload, &watch->export_tree}) {
+        // OnCommandSignaled only posts, so this wait has no UI dependency.
+        if (event->wait && !UnregisterWaitEx(event->wait, INVALID_HANDLE_VALUE)) stopped = false;
+    }
+    if (!stopped) {
+        STYLER_LOG(LogLevel::Error, L"command wait removal failed; context retained");
         return;
     }
-    UnregisterWaitEx(watch->wait, INVALID_HANDLE_VALUE);  // Waits for a running callback.
-    CloseHandle(watch->event);
+    CloseHandle(watch->reload.event);
+    CloseHandle(watch->export_tree.event);
     delete watch;
+    STYLER_LOG(LogLevel::Info, L"passive command watches stopped");
 }
 
 }  // namespace styler::tap

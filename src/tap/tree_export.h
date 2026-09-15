@@ -62,5 +62,9 @@ std::wstring FormatTree(const TreeNode& root);
 
 // Walks the live visual tree and writes the formatted result.
 HRESULT ExportTreeToFile(const std::wstring& path);
+// Failed Unadvise retains its callback/service. No new standing subscription
+// may start until an explicit retry succeeds. Called by the export worker.
+bool SnapshotNeedsStop();
+HRESULT StopPendingSnapshot();
 
 }  // namespace styler::tap

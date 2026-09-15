@@ -22,58 +22,18 @@
 #include <inspectable.h>
 #include <ocidl.h>
 
-#include <atomic>
+#include <memory>
 #include <new>
 #include <string>
 
-#include <tap/change_subscription.h>
 #include <tap/clsid.h>
 #include <tap/log.h>
 #include <tap/site.h>
 #include <tap/theme_session.h>
-#include <tap/thread_init.h>
-#include <tap/tree_export.h>
-#include <tap/visual_tree_watcher.h>
-#include <tap/winrt_common.h>
 
 namespace styler::tap {
 
 namespace {
-
-// Written only by SetSite below, guarded by the AddRef/Release pairing COM
-// requires. Read it only through SiteOrNull() (site.h) - never reach for
-// this variable directly from another translation unit or thread; the TAP
-// is called from several explorer UI threads, hence std::atomic rather than
-// a plain pointer.
-std::atomic<IUnknown*> g_site{nullptr};
-
-void WINAPI InitThunkPublic(void*) {
-    InitializeForCurrentThread();
-}
-
-// Proves, once per load, that the C++/WinRT projection works on a real XAML
-// object inside explorer: GetUiLayer returns the diagnostics adorner Grid
-// (spike: S_OK, detached, zero children). If this line ever stops logging
-// "Windows.UI.Xaml.Controls.Grid", every later task's assumption is gone.
-void ProbeWinRt(const std::shared_ptr<DiagnosticsSession>& session) {
-    try {
-        ::IInspectable* raw = nullptr;
-        HRESULT hr = session->diagnostics()->GetUiLayer(&raw);
-        if (FAILED(hr) || !raw) {
-            STYLER_LOG(LogLevel::Error, L"GetUiLayer failed 0x%08X",
-                       static_cast<unsigned>(hr));
-            return;
-        }
-        auto layer = InspectableFromRaw(raw);
-        STYLER_LOG(LogLevel::Info, L"winrt ok: %s",
-                   winrt::get_class_name(layer).c_str());
-    } catch (winrt::hresult_error const& ex) {
-        STYLER_LOG(LogLevel::Error, L"ProbeWinRt hresult 0x%08X",
-                   static_cast<unsigned>(ex.code()));
-    } catch (...) {
-        STYLER_LOG(LogLevel::Error, L"ProbeWinRt threw");
-    }
-}
 
 class TaskbarStylerTap : public IObjectWithSite {
 public:
@@ -105,146 +65,20 @@ public:
     HRESULT STDMETHODCALLTYPE SetSite(IUnknown* site) override {
         try {
             STYLER_LOG(LogLevel::Info, L"SetSite(%p)", site);
-
-            // Note: upstream calls FreeLibrary(GetCurrentModuleHandle()) here
-            // to rebalance a reference InitializeXamlDiagnosticsEx added. We
-            // deliberately do not: DllCanUnloadNow always returns S_FALSE, so
-            // this module never unloads anyway, and the extra pin is
-            // redundant rather than additive.
-            if (IUnknown* previous = g_site.exchange(nullptr)) {
-                previous->Release();
+            std::shared_ptr<IUnknown> owned;
+            if (site) {
+                site->AddRef();
+                owned = std::shared_ptr<IUnknown>(site, [](IUnknown* value) { value->Release(); });
             }
-            if (!site) {
-                StopHostWatch();
-                // Before StopSubscription(): a reload signalled mid-teardown
-                // must not race SetSite(nullptr) for ownership of the
-                // subscription it is about to stop.
-                StopReloadWatch();
-                if (!RestoreThemeOnAllThreads()) {
-                    // Keep the session backing any state we could not
-                    // restore. A late dispatch may still be in flight.
-                    STYLER_LOG(LogLevel::Error,
-                               L"teardown deferred: restore incomplete");
-                    return S_OK;
-                }
-                StopSubscription();
-                CloseDiagnostics();
-                return S_OK;
-            }
-
-            // A previous teardown may have left a live session because one
-            // thread could not be restored. Retry that barrier before a load
-            // replaces its session/theme; its TLS state still belongs to it.
-            if (AcquireSession() && !RestoreThemeOnAllThreads()) {
-                STYLER_LOG(LogLevel::Error,
-                           L"load deferred: previous restore incomplete");
-                return S_OK;
-            }
-
-            site->AddRef();
-            g_site.store(site, std::memory_order_release);
-
-            // spike-standing-crash: a second SetSite(site) (e.g. a second
-            // `taskbar-styler load` without restarting Explorer) must not
-            // reopen the diagnostics session while the old subscription is
-            // still registered against the old one - OpenDiagnostics closing
-            // that session out from under it leaves g_subscription pointing
-            // at a dead service/callback, and no new subscription can start
-            // until Explorer restarts (measured: spike E8b, "second load").
-            // StopSubscription can also come back Deferred: the old advise
-            // thread was still inside AdviseVisualTreeChange, and was left
-            // alone rather than waited for (waiting here, on the UI thread
-            // Advise marshals its walk onto, would deadlock). Reopening the
-            // session now would orphan that still-live callback the same
-            // way an unconditional reopen would - so this load does nothing
-            // further: the old callback keeps reporting against the old
-            // session, which it holds alive through its own shared_ptr,
-            // until it tears itself down on its own. A later load can retry
-            // once that settles.
-            StopResult stop_result = StopSubscription();
-            if (stop_result == StopResult::Deferred) {
-                STYLER_LOG(LogLevel::Info,
-                           L"load ignored: previous subscription still "
-                           L"advising; the running one stays in place - "
-                           L"retry in a moment");
-                return S_OK;
-            }
-
-            wchar_t host[MAX_PATH]{};
-            GetModuleFileNameW(nullptr, host, MAX_PATH);
-            STYLER_LOG(LogLevel::Info, L"loaded into %s", host);
-
-            HRESULT hr = OpenDiagnostics(site);
-            if (FAILED(hr)) {
-                STYLER_LOG(LogLevel::Error, L"OpenDiagnostics failed 0x%08X",
-                           static_cast<unsigned>(hr));
-            } else {
-                if (HWND ui = GetTaskbarUiWnd()) {
-                    RunOnWindowThread(ui, InitThunkPublic, nullptr);
-                }
-                for (HWND xaml_host : GetXamlHostWnds()) {
-                    RunOnWindowThread(xaml_host, InitThunkPublic, nullptr);
-                }
-                StartHostWatch();
-
-                std::wstring dir = StylerDataDir();
-                if (!dir.empty()) {
-                    HRESULT export_hr =
-                        ExportTreeToFile(dir + L"\\visual-tree.txt");
-                    if (FAILED(export_hr)) {
-                        STYLER_LOG(LogLevel::Error,
-                                   L"ExportTreeToFile failed 0x%08X",
-                                   static_cast<unsigned>(export_hr));
-                    }
-                }
-
-                STYLER_LOG(LogLevel::Info, L"init data: %s",
-                           InitializationData().c_str());
-                if (auto session = AcquireSession()) {
-                    ProbeWinRt(session);
-                }
-
-                // Goes before StartSubscription(): the subscription's
-                // initial flood is what applies this theme to every element
-                // already on screen (Task 5 brief, Step 7).
-                HRESULT theme_hr = LoadConfiguredTheme();
-                if (FAILED(theme_hr)) {
-                    STYLER_LOG(LogLevel::Error, L"LoadConfiguredTheme failed 0x%08X",
-                               static_cast<unsigned>(theme_hr));
-                }
-
-                // The first-drain-on-this-thread EngineStats line is NOT logged here:
-                // StartSubscription() only starts the advise thread and
-                // returns immediately (change_subscription.h) - the actual
-                // flood is XAML marshalling the walk onto THIS UI thread,
-                // which cannot run until this SetSite call itself returns
-                // to the message loop. Logging stats here would always read
-                // zero. release_queue.cpp's FlushReleasesNow logs them
-                // instead, the first time it drains on this thread - that
-                // only happens once the queue has been quiet for kQuietMs,
-                // which the initial flood's own burst of Add reports
-                // guarantees has finished by then.
-                HRESULT sub_hr = StartSubscription();
-                if (FAILED(sub_hr)) {
-                    STYLER_LOG(LogLevel::Error, L"StartSubscription failed 0x%08X",
-                               static_cast<unsigned>(sub_hr));
-                }
-
-                HRESULT reload_hr = StartReloadWatch();
-                if (FAILED(reload_hr)) {
-                    STYLER_LOG(LogLevel::Error, L"StartReloadWatch failed 0x%08X",
-                               static_cast<unsigned>(reload_hr));
-                }
-            }
+            RequestSessionChange(std::move(owned));
         } catch (...) {
             STYLER_LOG(LogLevel::Error, L"SetSite threw");
         }
         return S_OK;
     }
-
     HRESULT STDMETHODCALLTYPE GetSite(REFIID riid, void** ppv) override {
         try {
-            IUnknown* site = g_site.load(std::memory_order_acquire);
+            auto site = AcquireSite();
             if (!site) {
                 if (ppv) {
                     *ppv = nullptr;
@@ -316,9 +150,7 @@ private:
 
 }  // namespace
 
-IUnknown* SiteOrNull() {
-    return g_site.load(std::memory_order_acquire);
-}
+
 
 }  // namespace styler::tap
 

@@ -7,6 +7,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <mutex>
+#include <share.h>
 #include <string>
 
 namespace styler::tap {
@@ -107,8 +108,10 @@ void LogLine(LogLevel level, std::wstring_view line) {
     std::lock_guard<std::mutex> lock(g_file_mutex);
     RotateIfLarge(path);
 
-    FILE* f = nullptr;
-    if (_wfopen_s(&f, path.c_str(), L"a+, ccs=UTF-8") == 0 && f) {
+    // The tray reads while TAP callbacks append. _wfopen_s denies sharing,
+    // so even a FILE_SHARE_WRITE reader made entire lifecycle records vanish.
+    FILE* f = _wfsopen(path.c_str(), L"a+, ccs=UTF-8", _SH_DENYNO);
+    if (f) {
         fputws(full.c_str(), f);
         fclose(f);
     }

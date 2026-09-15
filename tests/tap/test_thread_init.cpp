@@ -73,6 +73,39 @@ HWND DispatchWindowFor(DWORD thread_id) {
     return nullptr;
 }
 
+struct PostedFixture {
+    HANDLE entered = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    HANDLE release = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    HANDLE finished = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    ~PostedFixture() {
+        SetEvent(release);
+        CloseHandle(entered);
+        CloseHandle(release);
+        CloseHandle(finished);
+    }
+};
+thread_local PostedFixture* t_posted_fixture = nullptr;
+void PostedHandler(unsigned command, std::uint64_t) {
+    if (command == 1) {
+        SetEvent(t_posted_fixture->entered);
+        WaitForSingleObject(t_posted_fixture->release, 2000);
+    } else {
+        SetEvent(t_posted_fixture->finished);
+    }
+}
+void WINAPI ConfigurePosted(void* value) {
+    t_posted_fixture = static_cast<PostedFixture*>(value);
+    styler::tap::SetCommandHandlerForCurrentThread(PostedHandler);
+}
+struct OwnedDispatchResult { DWORD thread = 0; };
+void WINAPI RecordOwnedThread(void* value) {
+    static_cast<OwnedDispatchResult*>(value)->thread = GetCurrentThreadId();
+}
+void WINAPI CreateReleaseOnlyDispatcher(void*) {
+    CHECK(styler::tap::EnsureDispatchWindowForCurrentThread() != nullptr);
+    CHECK_FALSE(styler::tap::IsInitializedForCurrentThread());
+}
+
 }  // namespace
 
 TEST_CASE("initialized thread remains reachable after its shell host closes") {
@@ -109,4 +142,34 @@ TEST_CASE("dispatch callback failure is reported and does not escape the loop") 
     REQUIRE(dispatch != nullptr);
     CHECK_FALSE(styler::tap::RunOnWindowThread(dispatch, ThrowFromCallback, nullptr));
     CHECK(styler::tap::RunOnWindowThread(dispatch, Initialize, nullptr));
+}
+
+TEST_CASE("posted control commands do not wait for a busy owner UI") {
+    PostedFixture fixture;
+    HostThread host;
+    REQUIRE(styler::tap::RunOnWindowThread(host.host(), ConfigurePosted, &fixture));
+    const HWND dispatch = DispatchWindowFor(host.id());
+    REQUIRE(dispatch != nullptr);
+    CHECK(styler::tap::PostThreadCommand(dispatch, 1, 1));
+    CHECK(WaitForSingleObject(fixture.entered, 1000) == WAIT_OBJECT_0);
+    // This call returns while the first handler is still blocked above.
+    CHECK(styler::tap::PostThreadCommand(dispatch, 2, 1));
+    CHECK(WaitForSingleObject(fixture.finished, 0) == WAIT_TIMEOUT);
+    SetEvent(fixture.release);
+    CHECK(WaitForSingleObject(fixture.finished, 1000) == WAIT_OBJECT_0);
+}
+
+TEST_CASE("snapshot release dispatch owns its payload without enabling styling") {
+    HostThread host;
+    REQUIRE(styler::tap::RunOnWindowThread(host.host(), CreateReleaseOnlyDispatcher, nullptr));
+    const HWND dispatch = DispatchWindowFor(host.id());
+    REQUIRE(dispatch != nullptr);
+    auto result = std::make_shared<OwnedDispatchResult>();
+    const std::weak_ptr<OwnedDispatchResult> weak = result;
+    CHECK(styler::tap::RunOwnedOnWindowThread(dispatch, RecordOwnedThread, result));
+    CHECK(result->thread == host.id());
+    result.reset();
+    CHECK(weak.expired());
+    CHECK(styler::tap::RunOnWindowThread(dispatch, Initialize, nullptr));
+    CHECK(DispatchWindowFor(host.id()) == dispatch);
 }

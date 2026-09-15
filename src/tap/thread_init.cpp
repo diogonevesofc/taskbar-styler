@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cwchar>
 #include <new>
+#include <mutex>
 
 #include <tap/log.h>
 
@@ -13,12 +14,25 @@ namespace {
 thread_local bool t_initialized = false;
 thread_local HWND t_dispatch_window = nullptr;
 std::atomic<HWINEVENTHOOK> g_host_hook{nullptr};
+std::atomic<DWORD> g_host_thread{0};
+std::mutex g_host_mutex;
+thread_local CommandHandler t_command_handler = nullptr;
+constexpr UINT kCommandMessage = WM_APP + 0x354;
 
 constexpr wchar_t kDispatchWindowClass[] =
     L"TaskbarStyler_ThreadDispatch_63762654_9768_4CAB_871C_386A9193E22D";
 
 LRESULT CALLBACK DispatchWindowProc(HWND window, UINT message,
                                     WPARAM wparam, LPARAM lparam) {
+    if (message == kCommandMessage && t_command_handler) {
+        try {
+            t_command_handler(static_cast<unsigned>(wparam),
+                              static_cast<std::uint64_t>(lparam));
+        } catch (...) {
+            STYLER_LOG(LogLevel::Error, L"posted command threw");
+        }
+        return 0;
+    }
     // No XAML/COM work during window destruction: thread/apartment teardown
     // may already be in progress. The OS owns the window's thread lifetime.
     if (message == WM_NCDESTROY && t_dispatch_window == window) {
@@ -54,6 +68,7 @@ struct RunParam {
     ThreadProc proc;
     void* param;
     HWND target;
+    std::shared_ptr<void> owner;
     std::atomic<bool> completed{false};
 };
 
@@ -149,7 +164,8 @@ HWND GetTaskbarUiWnd() {
                          nullptr);
 }
 
-bool RunOnWindowThread(HWND hWnd, ThreadProc proc, void* param) {
+static bool RunOnWindowThreadCore(HWND hWnd, ThreadProc proc, void* param,
+                                 std::shared_ptr<void> owner) {
     DWORD thread_id = GetWindowThreadProcessId(hWnd, nullptr);
     if (thread_id == 0) {
         return false;
@@ -202,7 +218,7 @@ bool RunOnWindowThread(HWND hWnd, ThreadProc proc, void* param) {
     // Heap, not stack: see the timeout branch below. nothrow because this
     // runs under SetSite and the reload pool thread, neither of which may
     // let an exception out.
-    auto* rp = new (std::nothrow) RunParam{proc, param, hWnd};
+    auto* rp = new (std::nothrow) RunParam{proc, param, hWnd, std::move(owner)};
     if (!rp) {
         UnhookWindowsHookEx(hook);
         return false;
@@ -257,11 +273,25 @@ bool RunOnWindowThread(HWND hWnd, ThreadProc proc, void* param) {
     return completed;
 }
 
+bool RunOnWindowThread(HWND hWnd, ThreadProc proc, void* param) {
+    return RunOnWindowThreadCore(hWnd, proc, param, nullptr);
+}
+
+bool RunOwnedOnWindowThread(HWND hWnd, ThreadProc proc, std::shared_ptr<void> parameter) {
+    void* raw = parameter.get();
+    return RunOnWindowThreadCore(hWnd, proc, raw, std::move(parameter));
+}
+
+HWND EnsureDispatchWindowForCurrentThread() {
+    if (!t_dispatch_window) t_dispatch_window = CreateDispatchWindow();
+    return t_dispatch_window;
+}
+
 void InitializeForCurrentThread() {
     if (t_initialized) {
         return;
     }
-    t_dispatch_window = CreateDispatchWindow();
+    EnsureDispatchWindowForCurrentThread();
     if (!t_dispatch_window) {
         const DWORD error = GetLastError();
         STYLER_LOG(LogLevel::Error,
@@ -290,7 +320,22 @@ bool IsInitializedForCurrentThread() {
     return t_initialized;
 }
 
-void StartHostWatch() {
+HWND SetCommandHandlerForCurrentThread(CommandHandler handler) {
+    InitializeForCurrentThread();
+    t_command_handler = handler;
+    return t_dispatch_window;
+}
+
+bool PostThreadCommand(HWND window, unsigned command, std::uint64_t generation) {
+    return window && PostMessageW(window, kCommandMessage,
+                                  command, static_cast<LPARAM>(generation));
+}
+
+bool StartHostWatch() {
+    std::lock_guard lock(g_host_mutex);
+    if (g_host_hook.load()) {
+        return g_host_thread.load() == GetCurrentThreadId();
+    }
     HWINEVENTHOOK hook =
         SetWinEventHook(EVENT_OBJECT_CREATE, EVENT_OBJECT_CREATE, nullptr,
                         HostCreatedProc, GetCurrentProcessId(), 0,
@@ -298,21 +343,26 @@ void StartHostWatch() {
     STYLER_LOG(LogLevel::Info, L"host watch %s",
                hook ? L"started" : L"FAILED to start");
 
-    // exchange (not check-then-act) so two concurrent SetSite calls cannot
-    // both read "no hook yet" and both install one, leaking whichever hook
-    // gets overwritten without ever being unhooked - same reasoning as
-    // OpenDiagnostics's g_session.exchange (visual_tree_watcher.cpp).
-    HWINEVENTHOOK previous = g_host_hook.exchange(hook);
-    if (previous) {
-        UnhookWinEvent(previous);
-    }
+    // Publication and removal share this short lock. Unhook must run on the
+    // installing UI thread; a failed removal retains ownership for retry.
+    if (!hook) return false;
+    g_host_thread.store(GetCurrentThreadId());
+    g_host_hook.store(hook);
+    return true;
 }
 
-void StopHostWatch() {
-    HWINEVENTHOOK hook = g_host_hook.exchange(nullptr);
-    if (hook) {
-        UnhookWinEvent(hook);
+bool StopHostWatch() {
+    std::lock_guard lock(g_host_mutex);
+    HWINEVENTHOOK hook = g_host_hook.load();
+    if (!hook) return true;
+    if (g_host_thread.load() != GetCurrentThreadId() || !UnhookWinEvent(hook)) {
+        STYLER_LOG(LogLevel::Error, L"host watch removal failed on thread %lu", GetCurrentThreadId());
+        return false;
     }
+    g_host_hook.store(nullptr);
+    g_host_thread.store(0);
+    STYLER_LOG(LogLevel::Info, L"host watch stopped");
+    return true;
 }
 
 }  // namespace styler::tap

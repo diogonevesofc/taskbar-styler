@@ -7,6 +7,8 @@ add_executable(taskbar_styler_tap_tests
   test_blur_effects.cpp
   test_thread_init.cpp
   test_handle_ledger.cpp
+  test_lifecycle.cpp
+  test_report_dispatch.cpp
   ${CMAKE_SOURCE_DIR}/src/cli/loader.cpp
   ${CMAKE_SOURCE_DIR}/src/tap/blur_effects.cpp
   ${CMAKE_SOURCE_DIR}/src/tap/thread_init.cpp
@@ -34,3 +36,5 @@ if(MSVC)
 endif()
 
 add_test(NAME tap COMMAND taskbar_styler_tap_tests)
+set_tests_properties(tap PROPERTIES
+  ENVIRONMENT "LOCALAPPDATA=${CMAKE_CURRENT_BINARY_DIR}")

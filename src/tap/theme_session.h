@@ -2,8 +2,12 @@
 #pragma once
 
 #include <windows.h>
+#include <memory>
 
 namespace styler::tap {
+// SetSite only queues an owned site. Main-UI transitions restore, quiesce and
+// drain before replacing its diagnostics session. Null requests full teardown.
+void RequestSessionChange(std::shared_ptr<IUnknown> site);
 
 // Reads the config, loads <InitializationData()>\<theme>.json, prepares it
 // and installs it with SetTheme. S_FALSE when no theme is configured (and
@@ -11,8 +15,8 @@ namespace styler::tap {
 // installs no theme and logs why (spec section 7.6).
 HRESULT LoadConfiguredTheme();
 
-// Creates kReloadEventName (ipc.h) and waits on it from a thread-pool
-// thread. Each signal runs ReloadThemeOnUiThread on the taskbar UI thread.
+// Creates the reload/export events. Pool callbacks only post coalesced,
+// generation-checked work to the private main-UI window.
 // Idempotent: a second call while a watch is active is a no-op (S_FALSE).
 HRESULT StartReloadWatch();
 void StopReloadWatch();
@@ -22,12 +26,5 @@ void StopReloadWatch();
 // result leaves the theme disabled; callers must not install another theme
 // or close the diagnostics session until a later attempt succeeds.
 bool RestoreThemeOnAllThreads();
-
-// Restore on every initialized host thread, drop the subscription, reload
-// the configured theme, re-subscribe (the fresh initial flood re-applies to
-// everything, including elements the old theme never touched). Must run on
-// the taskbar UI thread - the thread SetSite ran on - because that is where
-// the flood lands and only initialized threads apply styles.
-void ReloadThemeOnUiThread();
 
 }  // namespace styler::tap

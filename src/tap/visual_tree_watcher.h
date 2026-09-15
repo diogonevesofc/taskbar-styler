@@ -6,6 +6,8 @@
 #include <xamlom.h>
 
 #include <memory>
+#include <mutex>
+#include <cstdint>
 #include <string>
 
 namespace styler::tap {
@@ -68,10 +70,16 @@ public:
     // Releases one handle via IXamlDiagnosticsTestHooks::UnregisterInstance.
     // Only call when has_hooks() is true.
     HRESULT ReleaseElementHandle(InstanceHandle handle) const;
+    std::uint64_t owner() const { return owner_; }
+    void Observe(InstanceHandle handle) const noexcept;
+    void Retire() noexcept;
 
 private:
     IXamlDiagnostics* diagnostics_;
     IXamlDiagnosticsTestHooks* hooks_;
+    std::uint64_t owner_;
+    mutable std::mutex observation_mutex_;
+    bool retired_ = false;
 };
 
 // Opens the diagnostics session against `site`'s IXamlDiagnostics. If a
@@ -91,15 +99,14 @@ void CloseDiagnostics();
 // CloseDiagnostics on another thread.
 std::shared_ptr<DiagnosticsSession> AcquireSession();
 
-// Releases one handle the diagnostics layer reported - e.g. a handle Task 5's
-// snapshot got back from the initial mutation flood. Every handle the
-// diagnostics layer hands out stays registered on its side and explorer.exe
-// leaks for as long as it runs until this is called (spec section 7.2). Safe
-// to call with handle == 0 (a root element's parent handle): that is not a
-// real handle, and the underlying vtable is private and undocumented, not
-// something to probe with a null handle. Also a safe no-op while no session
-// is open, or IXamlDiagnosticsTestHooks is unavailable on it.
-void ReleaseHandle(InstanceHandle handle);
+// Returns true only when this observed registration was released. The owner
+// travels with queued handles; a later global session must never release it.
+// Zero is a harmless sentinel. Call only outside a XAML callback, on the
+// reporting UI thread. Accounting failure never suppresses real cleanup.
+bool ReleaseHandle(const std::shared_ptr<DiagnosticsSession>& owner,
+                   InstanceHandle handle);
+void MarkHandleObservationIncomplete() noexcept;
+void LogHandleObservation();
 
 // Count of handles successfully released so far this process, via
 // ReleaseHandle. Monotonic - it only increases.

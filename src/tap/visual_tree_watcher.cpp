@@ -5,8 +5,14 @@
 #include <memory>
 
 #include <tap/log.h>
+#include <tap/handle_ledger.h>
 
 namespace styler::tap {
+namespace {
+auto* const g_handle_ledger = new HandleLedger;
+std::atomic<std::uint64_t> g_next_owner{1};
+}
+
 
 // {735941A2-3EE3-495A-8DA9-972627003075}
 // Private and undocumented; read from the vendored upstream at line 10946.
@@ -25,7 +31,7 @@ struct IXamlDiagnosticsTestHooks : IUnknown {
 
 DiagnosticsSession::DiagnosticsSession(IXamlDiagnostics* diagnostics,
                                         IXamlDiagnosticsTestHooks* hooks)
-    : diagnostics_(diagnostics), hooks_(hooks) {}
+    : diagnostics_(diagnostics), hooks_(hooks), owner_(g_next_owner.fetch_add(1)) {}
 
 DiagnosticsSession::~DiagnosticsSession() {
     if (hooks_) {
@@ -78,27 +84,81 @@ auto* const g_init_data =
 
 }  // namespace
 
-void ReleaseHandle(InstanceHandle handle) {
-    if (!handle) {
-        return;  // A root element's parent handle is 0; nothing to release.
-    }
-
-    std::shared_ptr<DiagnosticsSession> session = g_session->load();
-    if (!session || !session->has_hooks()) {
-        return;  // No session open, or hooks unavailable - warned once
-                 // already, in OpenDiagnostics.
-    }
-
-    HRESULT hr = session->ReleaseElementHandle(handle);
-    if (SUCCEEDED(hr)) {
-        g_released_handles.fetch_add(1, std::memory_order_relaxed);
-    } else {
-        STYLER_LOG(LogLevel::Error, L"UnregisterInstance(%llu) failed 0x%08X",
-                   static_cast<unsigned long long>(handle),
-                   static_cast<unsigned>(hr));
+void DiagnosticsSession::Observe(InstanceHandle handle) const noexcept {
+    try {
+        std::lock_guard lock(observation_mutex_);
+        g_handle_ledger->Observe(owner_, handle, retired_);
+    } catch (...) {
+        g_handle_ledger->MarkIncomplete();
     }
 }
 
+void DiagnosticsSession::Retire() noexcept {
+    try {
+        std::lock_guard lock(observation_mutex_);
+        retired_ = true;
+        g_handle_ledger->MarkOwnerRetired(owner_);
+    } catch (...) {
+        g_handle_ledger->MarkIncomplete();
+    }
+}
+
+void MarkHandleObservationIncomplete() noexcept {
+    g_handle_ledger->MarkIncomplete();
+}
+
+bool ReleaseHandle(const std::shared_ptr<DiagnosticsSession>& owner,
+                   InstanceHandle handle) {
+    if (!handle) return true;
+    if (!owner) {
+        MarkHandleObservationIncomplete();
+        return false;
+    }
+    auto token = g_handle_ledger->BeginRelease(owner->owner(), handle);
+    const bool tracked = token.status == HandleReleaseStatus::Started;
+    if (!tracked && token.status != HandleReleaseStatus::Untracked) return false;
+    // Accounting allocation failure must not veto the real cleanup. An
+    // untracked release remains explicitly incomplete and removes no record.
+    if (!tracked) MarkHandleObservationIncomplete();
+    if (!owner->has_hooks()) {
+        if (tracked) g_handle_ledger->CompleteRelease(token, HandleReleaseOutcome::Unavailable);
+        return false;
+    }
+    HRESULT hr = E_FAIL;
+    try {
+        hr = owner->ReleaseElementHandle(handle);
+    } catch (...) {
+        if (tracked) g_handle_ledger->CompleteRelease(token, HandleReleaseOutcome::Failed);
+        throw;
+    }
+    if (tracked) g_handle_ledger->CompleteRelease(token, SUCCEEDED(hr)
+        ? HandleReleaseOutcome::Succeeded : HandleReleaseOutcome::Failed);
+    if (SUCCEEDED(hr)) {
+        g_released_handles.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
+    STYLER_LOG(LogLevel::Error, L"UnregisterInstance(%llu) failed 0x%08X",
+               static_cast<unsigned long long>(handle), static_cast<unsigned>(hr));
+    return false;
+}
+
+void LogHandleObservation() {
+    FILETIME created{}, exited{}, kernel{}, user{}, now{};
+    if (!GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user)) {
+        MarkHandleObservationIncomplete();
+        return;
+    }
+    GetSystemTimeAsFileTime(&now);
+    auto value = [](FILETIME ft) {
+        return (static_cast<unsigned long long>(ft.dwHighDateTime) << 32) |
+               ft.dwLowDateTime;
+    };
+    const auto snapshot = g_handle_ledger->Snapshot();
+    STYLER_LOG(LogLevel::Info,
+        L"diagnostics handles: pid=%lu created=%llu observed=%zu incomplete=%u residual=%zu utc=%llu",
+        GetCurrentProcessId(), value(created), snapshot.outstanding,
+        snapshot.complete ? 0u : 1u, snapshot.residual_outstanding, value(now));
+}
 long ReleasedHandleCount() {
     return g_released_handles.load(std::memory_order_relaxed);
 }
@@ -167,6 +227,7 @@ HRESULT OpenDiagnostics(IUnknown* site) {
     // releases it below - exactly once, however many opens race.
     std::shared_ptr<DiagnosticsSession> previous = g_session->exchange(session);
     if (previous) {
+        previous->Retire();
         STYLER_LOG(LogLevel::Info,
                    L"OpenDiagnostics called with a session already open; "
                    L"closing and reopening");
@@ -189,7 +250,9 @@ void CloseDiagnostics() {
     // last reference anywhere, dropping it here (end of scope) closes the
     // session. A concurrent ReleaseHandle holding its own reference keeps it
     // alive until that call returns - never a dangling access.
+    session->Retire();
     STYLER_LOG(LogLevel::Info, L"diagnostics session closed");
+    LogHandleObservation();
 }
 
 }  // namespace styler::tap

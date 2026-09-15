@@ -2,6 +2,9 @@
 #include <doctest/doctest.h>
 
 #include <tap/log.h>
+#include <windows.h>
+#include <string>
+#include <vector>
 
 using styler::tap::GetLogLevel;
 using styler::tap::LogEnabled;
@@ -63,4 +66,30 @@ TEST_CASE("the macro does not evaluate its arguments when gated") {
 
     STYLER_LOG(LogLevel::Error, L"%s", expensive());
     CHECK(calls == 1);
+}
+
+TEST_CASE("diagnostic readers do not suppress native log records") {
+    // Use the actual writer and the same sharing flags as the tray reader.
+    // Initial writes also complete any pending rotation before taking a reader.
+    styler::tap::LogLine(LogLevel::Info, L"shared-reader test setup");
+    styler::tap::LogLine(LogLevel::Info, L"shared-reader test setup");
+    const auto path = styler::tap::StylerDataDir() + L"\\log.txt";
+    const HANDLE reader = CreateFileW(path.c_str(), GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    REQUIRE(reader != INVALID_HANDLE_VALUE);
+    struct Close { HANDLE value; ~Close() { CloseHandle(value); } } close{reader};
+    LARGE_INTEGER before{};
+    REQUIRE(GetFileSizeEx(reader, &before));
+    const std::string marker = "shared-reader-record-" +
+        std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64());
+    styler::tap::LogLine(LogLevel::Info, std::wstring(marker.begin(), marker.end()));
+    LARGE_INTEGER after{};
+    REQUIRE(GetFileSizeEx(reader, &after));
+    REQUIRE(after.QuadPart > before.QuadPart);
+    REQUIRE(SetFilePointerEx(reader, before, nullptr, FILE_BEGIN));
+    std::vector<char> appended(static_cast<std::size_t>(after.QuadPart - before.QuadPart));
+    DWORD read = 0;
+    REQUIRE(ReadFile(reader, appended.data(), static_cast<DWORD>(appended.size()), &read, nullptr));
+    CHECK(std::string(appended.data(), read).find(marker) != std::string::npos);
 }
