@@ -14,7 +14,7 @@ como o trabalho é organizado).
 | 2 | TAP carrega no explorer; exporta a árvore visual | mesclado em `main` |
 | 3 | Aplicar e desfazer estilos; assinatura permanente; CLI `apply/reset` | mesclado em `main` |
 | 3b | Fidelidade: blur real, variáveis de estilo, reciclagem, timeout no fan-out | concluído; gate operacional encerrado; integração local por fast-forward |
-| 4 | App de bandeja em C# .NET 10, sempre ligado, sobrevive a restart do explorer | não iniciado |
+| 4 | App de bandeja em C# .NET 10, sempre ligado, sobrevive a restart do explorer | concluído e revisado; integração local por fast-forward |
 
 `origin/main` permanece em `be0d3e6` e `origin/plano-3b-fidelidade` em
 `0db9622`. A entrega local do Plano 3b inclui correções em `27ff1a8`,
@@ -22,7 +22,34 @@ documentação em `c2a3607`, correção do reset entre threads em `bfe330d` e o
 registro final do gate. A integração em `main` usa fast-forward do branch
 `plano-3b-fidelidade`, sem commit direto em `main` nem push.
 
-## Plano 3b — onde parou
+## Plano 4 — entrega atual
+
+Plano: `docs/superpowers/plans/2026-09-14-plano-4-app-bandeja.md`.
+Registro completo: `docs/superpowers/plano-4-decisoes.md`.
+
+Entregues catálogo de 54 temas selecionáveis, config atômica compatível com
+CLI, estados de falha/espera, diagnóstico, exportação segura e recuperação após
+reinício. O reset deixa apenas o canal passivo de comandos. Retenção por owner,
+callbacks antecipados e leitor simultâneo do log passaram por regressões e
+smoke. Snapshot parcial preserva o arquivo anterior e aparece como falha.
+
+Build/CTest verdes: core 129/7808, TAP 55/282; C# 33 testes, Python 22,
+round-trip de 55 temas. DLL final SHA
+`93DA4A2EFD9B493BC3631601D42228E45FB36072393AF43C00C8EF5D344101D2`.
+Pacote local: `out/tray/TaskbarStyler.Tray.exe`, com .NET Desktop Runtime 10 x64.
+
+O reinício final recuperou o tema sem intervenção (16356 → 5024). Exportação
+inativa e saída concluídas; ledger observado `0/0/0`, visual e configuração
+original restaurados. O caso negativo de árvore parcial registrou os erros
+esperados e preservou SHA/mtime; não houve novo crash registrado no ensaio.
+
+Próxima etapa: validação prolongada e matriz controlada de monitores/DPI/
+hot-plug, sem declarar estabilidade de 24 h. O ledger não mede o cache privado
+inteiro do XAML. O menu foi validado pela janela de diagnóstico; clique direto
+no ícone continua pendente neste desktop (detalhes no registro). Não houve push
+nem execução remota do CI.
+
+## Plano 3b — histórico do fechamento
 
 Plano: `docs/superpowers/plans/2026-09-14-plano-3b-fidelidade.md` (7 tasks).
 Decisões e histórico de execução: `docs/superpowers/plano-3b-decisoes.md`.
@@ -227,10 +254,11 @@ e limites estão no [registro do repro](superpowers/plano-3b-repro-explorer.md).
 
 ## O que falta fazer, em ordem
 
-1. Preparar o plano do app de bandeja (Plano 4), incluindo os itens herdados
-   de ciclo de vida e instrumentação descritos abaixo.
-2. Executar os cenários manuais ainda não cobertos antes de declarar esses
-   requisitos validados. **Nunca push sem pedido explícito do dono.**
+1. Validar o clique direto no ícone da bandeja neste desktop; os comandos já
+   foram exercitados pelo menu acessível na janela de diagnóstico.
+2. Executar a matriz controlada de monitores, DPI e hot-plug, os cenários
+   manuais abaixo e a observação prolongada antes de declarar esses requisitos
+   validados. **Nunca push sem pedido explícito do dono.**
 
 Continuam parqueados, fora desta rodada: cache de `ResolveProperty`; extração
 do cálculo do capturador mais próximo para teste puro; reaplicar somente a
@@ -238,13 +266,15 @@ propriedade alterada em vez do bucket inteiro; reduzir os headers de composiçã
 incluídos por `winrt_common.h`. A guarda geral de valores negativos também não
 foi adotada.
 
-### Plano 4 — não iniciado
+### Plano 4 — entrega concluída
 
-O app de bandeja em C# .NET 10: sempre ligado, sobrevive a reinício do explorer,
-troca de tema pela bandeja. Ainda não tem plano escrito. Herda dois itens da
-revisão final do Plano 3: o contador de handles VIVOS (especificação §7.2) e o
-risco de deadlock em `SetSite(nullptr)` (`UnregisterWaitEx(INVALID_HANDLE_VALUE)`
-mais o ramo `!site` ignorando `Deferred`).
+O app de bandeja em C# .NET 10 foi implementado e recuperou o tema após reinício
+do Explorer no smoke. Os itens herdados da revisão final do Plano 3 foram
+tratados: ledger de registros de handles observados e encerramento da assinatura
+e dos recursos sem o ciclo de espera em `SetSite(nullptr)`. O alcance da contagem,
+as evidências de execução e as limitações estão no
+[registro de decisões](superpowers/plano-4-decisoes.md); as tarefas concluídas
+estão no [plano](superpowers/plans/2026-09-14-plano-4-app-bandeja.md).
 
 ## Incidente histórico das 14:13 — causa ainda indeterminada
 
@@ -276,15 +306,14 @@ não demonstra, sozinha, o mecanismo da falha. No novo crash, o timestamp do
 evento 1000 foi cerca de 348 ms depois da última linha; esse intervalo entre
 registros não mede o instante exato da exceção.
 
-## Pendências de teste manual
+## Pendências de validação ampliada
 
 `docs/smoke-test.md` itens 7 a 9: segundo monitor; menu Iniciar e central de
 notificações com tema aplicado; observação de dez minutos em repouso.
-`held` é `unique_count - to_release.size()` **do lote drenado**, conforme
-`src/tap/release_queue.cpp`; não é a contagem global de handles vivos. Portanto,
-`held == elementos estilizados` e `held == 0` não provam o invariante global da
-spec §7.2. Essa instrumentação continua pendente para o Plano 4; não marcar o
-gate de handles vivos como validado com o contador atual.
+O Plano 4 substituiu a observação isolada do lote por um ledger por owner,
+incluindo falhas e retenções entre lotes. `observed=0 incomplete=0 residual=0`
+confirma a liberação dos registros observados; não prova o total privado de
+handles do XAML. A matriz ampliada e a observação de 24 h continuam pendentes.
 
 ## Onde estão as evidências que não estão no git
 

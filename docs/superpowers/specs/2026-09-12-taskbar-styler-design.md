@@ -95,7 +95,7 @@ export nativo comum, o Tray chama por P/Invoke.
 ```
 Tray inicia
   └─ FindWindow("Shell_TrayWnd") → PID do explorer
-      └─ P/Invoke InitializeXamlDiagnosticsEx(conn, pid, "", tap.dll, CLSID, installDir)
+      └─ P/Invoke InitializeXamlDiagnosticsEx(conn, pid, "", tap.dll, CLSID, themesDir)
           └─ [dentro do explorer] Windows carrega tap.dll
               └─ DllGetClassObject → SetSite(IXamlDiagnostics)
                   └─ QI IVisualTreeService3
@@ -121,9 +121,16 @@ Apenas duas coisas cruzam, ambas em uma direção (Tray → TAP):
 1. **Configuração** — `%APPDATA%\TaskbarStyler\config.json`, contendo o nome do tema e o
    nível de log. Arquivo, não memória compartilhada: sobrevive a crash dos dois lados e é
    inspecionável com um editor de texto.
-2. **Sinal de recarga** — um Event nomeado do Windows. O Tray sinaliza após escrever; o TAP
+2. **Sinais de comando** — Events nomeados do Windows. O Tray sinaliza a recarga após escrever; o TAP
    acorda e reaplica. Escolhido em vez de vigiar o arquivo porque a troca de tema é um evento
    único e determinístico, sem debounce de gravação parcial.
+
+**Extensão do Plano 4:** um segundo Event solicita exportação nova da árvore,
+sem alterar a configuração. Os dois sinais continuam na direção Tray → TAP;
+não existe resposta de aplicação. O TAP serializa a pausa da assinatura, o
+snapshot e a retomada do tema na mesma sessão. O arquivo exportado é publicado
+apenas depois da escrita completa. A operação pode restaurar/reaplicar estilos
+temporariamente; abrir o arquivo anterior não conta como nova exportação.
 
 O TAP nunca fala de volta com o Tray. Não há canal de retorno, protocolo, nem versionamento
 de IPC. Se o TAP morre, o Tray descobre pelo desaparecimento do explorer.
@@ -282,9 +289,15 @@ O menu da bandeja oferece "Desativar tema" e, separadamente, "Reiniciar o Explor
 
 ### 6.5 Falha na carga
 
-Se `InitializeXamlDiagnosticsEx` falhar, o Tray **não tenta em loop**. Marca estado de falha,
-muda o ícone, registra o `HRESULT`. Novo retry apenas no próximo `TaskbarCreated` ou por ação
-do usuário. Um app que tenta injetar em loop infinito é indistinguível de um ataque.
+A operação de carga espera até 5 s pela conexão de diagnóstico: `TaskbarCreated`
+pode anteceder sua publicação. Somente uma varredura que retorna exclusivamente
+`ERROR_NOT_FOUND` permite nova varredura, após 100 ms, dentro da mesma operação.
+O prazo é conferido antes de cada chamada; ele limita novas tentativas, mas não
+interrompe uma chamada nativa bloqueada. Outro HRESULT de falha encerra imediatamente.
+
+Encerrada a operação com falha, o Tray muda o ícone e registra o `HRESULT`.
+Novo retry apenas no próximo `TaskbarCreated` ou por ação do usuário; o poll
+periódico não tenta novamente.
 
 ## 7. Erros e observabilidade
 
@@ -377,6 +390,12 @@ A checagem de nível ocorre **antes** de formatar a string. Arquivo em
 
 **Ativo** · **Inativo** · **Falhou** (tooltip com motivo e `HRESULT`, menu "Abrir log") ·
 **Aguardando** (explorer reiniciando).
+
+Sem confirmação TAP → Tray, **Ativo** indica configuração habilitada e último
+pedido de carga/recarga aceito. Não confirma cada regra nem o resultado visual.
+Diagnóstico apresenta separadamente a última observação do processo atual,
+com timestamp UTC e identidade PID + criação; dado ausente ou antigo não vira
+zero nem indicação de saúde.
 
 Nunca há diálogo modal. O TAP roda dentro do explorer; um `MessageBox` de lá trava o shell.
 
