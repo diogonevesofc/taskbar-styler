@@ -23,6 +23,8 @@ internal sealed class TrayContext : ApplicationContext
     private readonly System.Windows.Forms.Timer _poll = new() { Interval = 30_000 };
     private readonly System.Windows.Forms.Timer _diagnosticRefresh = new() { Interval = 2_000 };
     private DiagnosticWindow? _diagnostics;
+    private ThemeBrowserWindow? _browser;
+    private IReadOnlyList<ThemeInfo> _catalog = [];
     private OperationTrigger? _pending;
     private string _selectedTheme = "";
     private string _catalogErrors = "";
@@ -33,6 +35,7 @@ internal sealed class TrayContext : ApplicationContext
     internal TrayContext()
     {
         _menu.Items.AddRange([
+            new ToolStripMenuItem("Abrir temas e prévia", null, (_, _) => ShowBrowser()),
             _status, new ToolStripSeparator(), _themes, _disable, _retry,
             new ToolStripSeparator(), _export,
             new ToolStripMenuItem("Diagnóstico", null, (_, _) => ShowDiagnostics()),
@@ -40,9 +43,9 @@ internal sealed class TrayContext : ApplicationContext
             _restart, new ToolStripSeparator(), _exit
         ]);
         _icon = new NotifyIcon { Icon = SystemIcons.Information, Text = "TaskbarStyler — Inativo", ContextMenuStrip = _menu };
-        _window = new CommandWindow(OnTaskbarCreated, ShowDiagnostics);
+        _window = new CommandWindow(OnTaskbarCreated, () => ShowBrowser());
         _ = _window.Handle; // Install the WinForms synchronization context before async work.
-        _icon.DoubleClick += (_, _) => ShowDiagnostics();
+        _icon.MouseClick += (_, e) => { if (e.Button == MouseButtons.Left) ShowBrowser(); };
         _menu.Opening += (_, _) => { RefreshThemes(); UpdateUi(); };
         _disable.Click += async (_, _) => await ChangeThemeAsync("");
         _retry.Click += async (_, _) => await ReconcileAsync(OperationTrigger.UserAction);
@@ -55,7 +58,13 @@ internal sealed class TrayContext : ApplicationContext
         _poll.Start();
         _diagnosticRefresh.Start();
         RefreshThemes();
-        _window.BeginInvoke((Action)(async () => await ReconcileAsync(OperationTrigger.Startup)));
+        _window.BeginInvoke((Action)(async () =>
+        {
+            try { _selectedTheme = _config.Read().Theme; }
+            catch (Exception error) { RecordFailure(error); }
+            if (!_closing) ShowBrowser();
+            await ReconcileAsync(OperationTrigger.Startup);
+        }));
         TrayLog.Write("Bandeja iniciada.");
     }
 
@@ -73,7 +82,9 @@ internal sealed class TrayContext : ApplicationContext
         try
         {
             var catalog = ThemeCatalog.Load(_shell.ThemesPath);
+            _catalog = catalog.Themes;
             _catalogErrors = string.Join(Environment.NewLine, catalog.Errors);
+            _browser?.UpdateCatalog(_catalog);
             foreach (ToolStripItem item in _themes.DropDownItems.Cast<ToolStripItem>().ToArray()) item.Dispose();
             _themes.DropDownItems.Clear();
             foreach (var theme in catalog.Themes.Where(item => !item.IsVariant))
@@ -83,7 +94,7 @@ internal sealed class TrayContext : ApplicationContext
                 {
                     Tag = id, ToolTipText = theme.Author, Checked = string.Equals(id, _selectedTheme, StringComparison.OrdinalIgnoreCase)
                 };
-                item.Click += async (_, _) => await ChangeThemeAsync(id);
+                item.Click += (_, _) => ShowBrowser(id);
                 _themes.DropDownItems.Add(item);
             }
         }
@@ -281,14 +292,30 @@ internal sealed class TrayContext : ApplicationContext
         foreach (var item in new[] { _themes, _disable, _retry, _export, _restart, _exit }) item.Enabled = !_busy && !_closing;
         foreach (ToolStripMenuItem item in _themes.DropDownItems)
             item.Checked = string.Equals((string?)item.Tag, _selectedTheme, StringComparison.OrdinalIgnoreCase);
+        _browser?.UpdateStatus(_selectedTheme, _state.State, _busy || _closing, _state.LastError, _lastAction);
         RefreshDiagnostics();
+    }
+
+    private void ShowBrowser(string? themeId = null)
+    {
+        if (_closing) return;
+        RefreshThemes();
+        if (_browser is null || _browser.IsDisposed)
+            _browser = new ThemeBrowserWindow(_shell.ThemesPath, _catalog, _selectedTheme,
+                ChangeThemeAsync, () => ChangeThemeAsync(""), ShowDiagnostics);
+        if (themeId is not null) _browser.SelectPreview(themeId);
+        _browser.UpdateStatus(_selectedTheme, _state.State, _busy, _state.LastError, _lastAction);
+        if (_browser.WindowState == FormWindowState.Minimized) _browser.WindowState = FormWindowState.Normal;
+        _browser.Show();
+        WindowsShell.Native.ShowWindow(_browser.Handle, 5);
+        _browser.Activate();
     }
 
     private void ShowDiagnostics()
     {
         if (_diagnostics is null || _diagnostics.IsDisposed)
             _diagnostics = new DiagnosticWindow(OpenLog, RefreshDiagnostics,
-                () => _menu.Show(_diagnostics!, new Point(16, 40)));
+                () => _menu.Show(_diagnostics!, new Point(16, 40)), () => ShowBrowser());
         RefreshDiagnostics();
         if (_diagnostics.WindowState == FormWindowState.Minimized)
             _diagnostics.WindowState = FormWindowState.Normal;
@@ -353,6 +380,7 @@ internal sealed class TrayContext : ApplicationContext
             _poll.Dispose();
             _diagnosticRefresh.Dispose();
             _diagnostics?.Dispose();
+            _browser?.Dispose();
             _icon.Dispose();
             _menu.Dispose();
             _window.Dispose();
@@ -392,22 +420,31 @@ internal sealed class DiagnosticWindow : Form
     };
     [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
     internal string Content { set { if (_content.Text != value) _content.Text = value; } }
-    internal DiagnosticWindow(Action openLog, Action refresh, Action showMenu)
+    internal DiagnosticWindow(Action openLog, Action refresh, Action showMenu, Action showBrowser)
     {
         Text = "TaskbarStyler — Diagnóstico";
         Size = new Size(850, 520);
         StartPosition = FormStartPosition.CenterScreen;
-        var buttons = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 45, Padding = new Padding(8) };
-        var log = new Button { Text = "Abrir log", AutoSize = true };
-        var menu = new Button { Text = "Abrir menu", AutoSize = true };
-        var update = new Button { Text = "Atualizar", AutoSize = true };
-        var close = new Button { Text = "Fechar", AutoSize = true };
+        MinimumSize = new Size(770, 420);
+        BackColor = StudioPalette.Background;
+        _content.BackColor = StudioPalette.Surface;
+        _content.ForeColor = StudioPalette.Ink;
+        _content.BorderStyle = BorderStyle.None;
+        var body = new Panel { Dock = DockStyle.Fill, Padding = new Padding(24) };
+        body.Controls.Add(_content);
+        var buttons = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 65, Padding = new Padding(18, 8, 8, 8) };
+        var themes = new StudioButton("Temas e prévia");
+        var log = new StudioButton("Abrir log") { Width = 110 };
+        var menu = new StudioButton("Ferramentas") { Width = 130 };
+        var update = new StudioButton("Atualizar") { Width = 110 };
+        var close = new StudioButton("Fechar") { Width = 100 };
+        themes.Click += (_, _) => showBrowser();
         log.Click += (_, _) => openLog();
         menu.Click += (_, _) => showMenu();
         update.Click += (_, _) => refresh();
         close.Click += (_, _) => Close();
-        buttons.Controls.AddRange([menu, log, update, close]);
-        Controls.Add(_content);
+        buttons.Controls.AddRange([themes, menu, log, update, close]);
+        Controls.Add(body);
         Controls.Add(buttons);
     }
 }

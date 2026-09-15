@@ -31,7 +31,12 @@ $project = Join-Path $repoRoot 'src\tray\TaskbarStyler.Tray.csproj'
 dotnet publish $project --configuration Release --runtime win-x64 --self-contained false --output $OutputDirectory --nologo
 if ($LASTEXITCODE -ne 0) { throw 'Falha ao publicar a bandeja.' }
 
-Copy-Item -LiteralPath $tap -Destination (Join-Path $OutputDirectory 'TaskbarStyler.Tap.dll') -Force
+$tapOutput = Join-Path $OutputDirectory 'TaskbarStyler.Tap.dll'
+# A UI-only update can keep the identical DLL already loaded by Explorer.
+if (-not (Test-Path -LiteralPath $tapOutput) -or
+    (Get-FileHash -LiteralPath $tap).Hash -ne (Get-FileHash -LiteralPath $tapOutput).Hash) {
+    Copy-Item -LiteralPath $tap -Destination $tapOutput -Force
+}
 $cli = Join-Path $NativeDirectory 'taskbar-styler.exe'
 if (Test-Path -LiteralPath $cli) { Copy-Item -LiteralPath $cli -Destination $OutputDirectory -Force }
 [void][IO.Directory]::CreateDirectory($themesOutput)
