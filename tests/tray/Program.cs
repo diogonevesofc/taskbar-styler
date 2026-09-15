@@ -252,7 +252,12 @@ var tests = new (string Name, Action Run)[]
     })),
     ("repository theme corpus is represented without metadata failures", () =>
     {
-        var directory = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../themes"));
+        var ancestor = new DirectoryInfo(AppContext.BaseDirectory);
+        while (ancestor is not null && !File.Exists(Path.Combine(ancestor.FullName, "themes", "Pills.json")))
+            ancestor = ancestor.Parent;
+        if (ancestor is null)
+            throw new DirectoryNotFoundException("The repository theme corpus is required for this integration test.");
+        var directory = Path.Combine(ancestor.FullName, "themes");
         var catalog = ThemeCatalog.Load(directory);
         foreach (var error in catalog.Errors) Console.WriteLine(error);
         Check.Equal(0, catalog.Errors.Count);

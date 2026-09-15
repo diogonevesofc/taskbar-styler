@@ -46,6 +46,11 @@ neste checkpoint. A release registra os resultados finais e o commit exato;
 não publicar artefatos de um workflow que falhou. Instalador sem assinatura
 digital. Matriz de hardware e observação de 24 h continuam pendentes.
 
+A primeira execução remota passou no build/CTest, mas encontrou um caminho
+relativo fixo no teste C# do catálogo: `Platform=x64` acrescenta um nível à
+saída. O teste passa a localizar o corpus ascendendo até a raiz do repositório;
+isso não altera o comportamento do aplicativo distribuído.
+
 Plano: [distribuição](superpowers/plans/2026-09-15-plano-6-distribuicao.md).
 
 ## Plano 5 — histórico da entrega
