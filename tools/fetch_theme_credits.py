@@ -89,11 +89,12 @@ def write_themes_md(credits: dict[str, str]) -> None:
     lines = [
         "# Temas",
         "",
-        "Todos os temas vieram do mod "
+        "Os temas JSON foram extraidos das tabelas do mod "
         "[windows-11-taskbar-styler](https://github.com/ramensoftware/windhawk-mods)"
-        " e do "
-        "[guia de estilos](https://github.com/ramensoftware/windows-11-taskbar-styling-guide),"
-        " sob GPL-3.0. Credito de cada autor abaixo.",
+        ", versao 1.9 vendorizada neste projeto, sob GPL-3.0-only. O "
+        "[guia de estilos](https://github.com/ramensoftware/windows-11-taskbar-styling-guide)"
+        " foi consultado para creditos e referencias; esta declaracao nao atribui"
+        " licenca ao guia nem as suas imagens. Credito de cada autor abaixo.",
         "",
         f"{resolved} de {len(credits)} autores resolvidos.",
         "",

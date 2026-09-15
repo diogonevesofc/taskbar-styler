@@ -1,8 +1,11 @@
 # build
 build/
+build-*/
 out/
 bin/
 obj/
+.tools/
+.superpowers/
 
 # VS
 .vs/

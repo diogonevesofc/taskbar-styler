@@ -3,15 +3,23 @@ Copyright (C) 2026 Neves
 
 Este programa e uma obra derivada do mod "Windows 11 Taskbar Styler"
 (windows-11-taskbar-styler), versao 1.9, de m417z, distribuido sob a
-GNU General Public License v3.0.
+GNU General Public License v3.0 (GPL-3.0-only).
 
   Fonte original: https://github.com/ramensoftware/windhawk-mods
   Autor: m417z <https://m417z.com/>
 
-Os temas incluidos foram contribuidos por diversos autores ao repositorio
-windows-11-taskbar-styling-guide, tambem sob GPL-3.0. O credito individual
-de cada um esta em THEMES.md.
+Os temas JSON incluidos foram extraidos das tabelas de temas desse mod,
+sob a mesma GPL v3.0. Os creditos individuais estao em THEMES.md. O repositorio
+windows-11-taskbar-styling-guide foi consultado para creditos e referencias;
+nao se atribui uma licenca geral ao guia ou as suas imagens.
+
+Modificacoes neste projeto em 2026: motor independente, integracao XAML
+Diagnostics, CLI, app de bandeja, conversao dos temas e previa ilustrativa.
+O mod vendorizado permanece inalterado. O projeto nao e afiliado ao Windhawk.
 
 Este programa e software livre: voce pode redistribui-lo e/ou modifica-lo
 sob os termos da GNU General Public License, versao 3, conforme publicada
-pela Free Software Foundation. Veja LICENSE para o texto completo.
+pela Free Software Foundation. A obra combinada e distribuida sob
+GPL-3.0-only; avisos GPL-3.0-or-later em contribuicoes originais nao ampliam
+a concessao do upstream. Veja LICENSE para o texto completo e
+THIRD_PARTY_NOTICES.md para as dependencias e seus avisos.

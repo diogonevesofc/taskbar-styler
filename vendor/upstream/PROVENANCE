@@ -2,7 +2,11 @@ File: windows-11-taskbar-styler.wh.cpp
 
 Source: https://github.com/ramensoftware/windhawk-mods/blob/main/mods/windows-11-taskbar-styler.wh.cpp
 Author: m417z <https://m417z.com/>
-License: GPL-3.0-or-later (per repository)
+License: GPL-3.0-only
+License basis: the vendored file header states "Source code is published
+under The GNU General Public License v3.0." It does not grant an
+"or any later version" option. The repository's default MIT license for
+mods without an explicit license does not apply to this file.
 
 Downloaded: 2026-09-12
 Lines: 20409

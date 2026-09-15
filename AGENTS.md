@@ -64,8 +64,12 @@ docs/       spec, planos, registros de decisões, smoke-test.md, STATUS.md.
   `Resources()`).
 - **Falhar fechado por regra, nunca pela metade por tema**: uma regra que não
   aplica é logada em `Error` e as demais seguem.
-- **Licença GPL-3.0-or-later.** Todo `.h`/`.cpp`/`.py` novo começa com
-  `// SPDX-License-Identifier: GPL-3.0-or-later` (não em CMake nem YAML).
+- **Licença da obra combinada: GPL-3.0-only**, conforme a concessão do mod
+  upstream. Preserve os avisos existentes. Contribuições inteiramente
+  originais deste projeto podem usar `SPDX-License-Identifier: GPL-3.0-or-later`
+  no cabeçalho, com o comentário adequado à linguagem; isso não amplia a
+  licença das partes derivadas do upstream. Veja `NOTICE` e
+  `THIRD_PARTY_NOTICES.md`.
 - **Idioma:** identificadores e comentários de código em **inglês**;
   documentação, planos e mensagens de commit em **português**.
 
