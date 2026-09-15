@@ -6,6 +6,7 @@ add_library(taskbar_styler_tap_lib STATIC
   log.cpp
   tree_format.cpp
   release_policy.cpp
+  handle_ledger.cpp
 )
 target_include_directories(taskbar_styler_tap_lib PUBLIC ..)
 

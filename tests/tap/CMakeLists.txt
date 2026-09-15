@@ -6,6 +6,7 @@ add_executable(taskbar_styler_tap_tests
   test_dynamic_styles.cpp
   test_blur_effects.cpp
   test_thread_init.cpp
+  test_handle_ledger.cpp
   ${CMAKE_SOURCE_DIR}/src/cli/loader.cpp
   ${CMAKE_SOURCE_DIR}/src/tap/blur_effects.cpp
   ${CMAKE_SOURCE_DIR}/src/tap/thread_init.cpp
