@@ -51,6 +51,10 @@ relativo fixo no teste C# do catálogo: `Platform=x64` acrescenta um nível à
 saída. O teste passa a localizar o corpus ascendendo até a raiz do repositório;
 isso não altera o comportamento do aplicativo distribuído.
 
+O CI geral passou em `006d553`. Na release, a pré-checagem do Inno encontrou
+`FileVersion=0.0.0.0` no ISCC; o script passa a validar o banner de versão da
+compilação real, em vez do recurso de versão do executável.
+
 Plano: [distribuição](superpowers/plans/2026-09-15-plano-6-distribuicao.md).
 
 ## Plano 5 — histórico da entrega

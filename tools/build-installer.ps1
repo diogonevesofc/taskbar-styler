@@ -99,9 +99,17 @@ if (-not $CompilerPath -or -not (Test-Path -LiteralPath $CompilerPath -PathType 
     throw 'Compilador Inno Setup 6 não encontrado. Use -CompilerPath; este script não instala ferramentas.'
 }
 $CompilerPath = (Resolve-Path -LiteralPath $CompilerPath).ProviderPath
-$compilerVersion = (Get-Item -LiteralPath $CompilerPath).VersionInfo
-if ($compilerVersion.FileMajorPart -ne 6 -or $compilerVersion.FileMinorPart -lt 3) {
-    throw 'É necessário Inno Setup 6.3 ou superior da série 6.'
+function Get-InnoCompilerVersion([string]$Banner) {
+    # ISCC's PE version resource is 0.0.0.0. The loaded compiler engine emits
+    # its actual version during compilation (ISCC.dpr, ShowBanner/Go).
+    $match = [regex]::Match($Banner,
+        '(?m)^Compiler engine version: Inno Setup (?<version>\d+\.\d+\.\d+(?:\.\d+)?)[ \t]*\r?$')
+    if (-not $match.Success) { throw 'ISCC não informou uma versão reconhecida do motor de compilação.' }
+    $compilerVersion = [version]$match.Groups['version'].Value
+    if ($compilerVersion.Major -ne 6 -or $compilerVersion.Minor -lt 3) {
+        throw "É necessário Inno Setup 6.3 ou superior da série 6; encontrado $compilerVersion."
+    }
+    return $compilerVersion
 }
 $appVersion = ($Version -split '-', 2)[0]
 foreach ($component in $appVersion.Split('.')) {
@@ -111,10 +119,13 @@ foreach ($component in $appVersion.Split('.')) {
 $suffix = if ($InstallerTest) { 'installer-test' } else { 'setup' }
 $artifact = Join-Path $OutputDirectory "TaskbarStyler-$Version-win-x64-$suffix.exe"
 if (Test-Path -LiteralPath $artifact) { throw "A saída já existe. Use um diretório novo: $artifact" }
-$compilerArguments = @('/Qp', "/DPackageDirectory=$PackageDirectory", "/DReleaseVersion=$Version",
+$compilerArguments = @("/DPackageDirectory=$PackageDirectory", "/DReleaseVersion=$Version",
     "/DAppVersion=$appVersion", "/DInstallerOutput=$OutputDirectory")
 if ($InstallerTest) { $compilerArguments += '/DInstallerTest=1' }
-& $CompilerPath @compilerArguments (Join-Path $repoRoot 'installer\taskbar-styler.iss')
+& $CompilerPath @compilerArguments (Join-Path $repoRoot 'installer\taskbar-styler.iss') |
+    Tee-Object -Variable compilerOutput
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup falhou com código $LASTEXITCODE." }
+$compilerVersion = Get-InnoCompilerVersion ($compilerOutput -join [Environment]::NewLine)
+Write-Host "Compilador validado: Inno Setup $compilerVersion ($CompilerPath)"
 if (-not (Test-Path -LiteralPath $artifact -PathType Leaf)) { throw 'Inno Setup não produziu o instalador esperado.' }
 Write-Output $artifact
