@@ -317,6 +317,7 @@ var tests = new (string Name, Action Run)[]
     }))
 };
 
+tests = [.. tests, .. TestThemeBrowser.Cases, .. ThemePreviewTests.All];
 var failed = 0;
 foreach (var (name, run) in tests)
 {
