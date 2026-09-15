@@ -1,0 +1,236 @@
+name: Build release packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Package version (without the v prefix)
+        type: string
+        required: true
+        default: 0.1.0-beta.1
+  push:
+    tags: ['v*']
+
+# Publication is a separate, explicitly reviewed action after downloading and
+# testing these artifacts. This workflow cannot create or update a release.
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      DOTNET_GENERATE_ASPNET_CERTIFICATE: 'false'
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve package version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          $version = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME.Substring(1) } else { $env:INPUT_VERSION }
+          if ($version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$') {
+            throw "Invalid package version: $version"
+          }
+          if ($version -ne (Get-Content VERSION -Raw).Trim()) { throw 'The release version must match VERSION in this commit.' }
+          "value=$version" >> $env:GITHUB_OUTPUT
+          "RELEASE_VERSION=$version" >> $env:GITHUB_ENV
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Install build-time Python test dependency
+        run: python -m pip install pytest
+
+      - name: Converter tests
+        run: python -m pytest tools/ -q
+
+      - name: Round-trip all 55 themes
+        run: python tools/extract_themes.py roundtrip --source vendor/upstream/windows-11-taskbar-styler.wh.cpp --expect-count 55
+
+      - name: Verify committed theme bytes
+        run: |
+          $check = Join-Path $env:RUNNER_TEMP 'taskbar-styler-themes-check'
+          python tools/extract_themes.py convert --source vendor/upstream/windows-11-taskbar-styler.wh.cpp --out $check --credits themes/credits.json
+          if ($LASTEXITCODE -ne 0) { throw 'Theme conversion failed.' }
+          $source = @(Get-ChildItem themes -File -Filter '*.json' | Where-Object Name -ne 'credits.json')
+          $converted = @(Get-ChildItem -LiteralPath $check -File -Filter '*.json')
+          if ($source.Count -ne 55 -or $converted.Count -ne 55) { throw 'Unexpected theme count.' }
+          foreach ($file in $source) {
+            $copy = Join-Path $check $file.Name
+            if (-not (Test-Path -LiteralPath $copy) -or
+                (Get-FileHash -LiteralPath $file.FullName).Hash -ne (Get-FileHash -LiteralPath $copy).Hash) {
+              throw "Theme differs from the source: $($file.Name)"
+            }
+          }
+
+      - name: Configure native Release with the static C++ runtime
+        run: cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+
+      - name: Build native binaries
+        run: cmake --build build-release
+
+      - name: Native tests
+        run: ctest --test-dir build-release --output-on-failure
+
+      - name: Tray core behavior tests
+        run: dotnet run --project tests/tray/TaskbarStyler.Tray.Tests.csproj --configuration Release
+
+      - name: Publish the offline x64 application
+        run: ./tools/build-tray.ps1 -NativeDirectory build-release/src/cli -OutputDirectory out/release/app -SelfContained -Version $env:RELEASE_VERSION
+
+      - name: Record corresponding source revision
+        run: |
+          $commit = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $commit -ne $env:GITHUB_SHA) { throw 'Checkout does not match the requested source revision.' }
+          [IO.File]::WriteAllText((Join-Path $env:GITHUB_WORKSPACE 'out/release/app/COMMIT.txt'), $commit + "`n", [Text.UTF8Encoding]::new($false))
+
+      - name: Audit native runtime imports
+        run: |
+          foreach ($name in @('TaskbarStyler.Tap.dll', 'taskbar-styler.exe')) {
+            $imports = & dumpbin /dependents (Join-Path 'out/release/app' $name) | Out-String
+            if ($LASTEXITCODE -ne 0) { throw "Cannot inspect imports: $name" }
+            if ($imports -match '(?im)^\s*(?:VCRUNTIME\d+[^\s]*|MSVCP\d+[^\s]*|MSVCR\d+[^\s]*|ucrtbased)\.dll\s*$') {
+              throw "Unexpected global Visual C++ runtime dependency in $name`: $imports"
+            }
+          }
+
+      - name: Compile the distributable installer
+        run: ./tools/build-installer.ps1 -PackageDirectory out/release/app -OutputDirectory out/release/artifacts -Version $env:RELEASE_VERSION
+
+      - name: Compile the isolated Server installer test variant
+        run: ./tools/build-installer.ps1 -PackageDirectory out/release/app -OutputDirectory out/release/installer-test -Version $env:RELEASE_VERSION -InstallerTest
+
+      - name: Test installer extraction, consent, preservation and uninstall
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installRoot = Join-Path $env:ProgramFiles "Taskbar Styler CI $env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          $installRoot = [IO.Path]::GetFullPath($installRoot)
+          if (-not $installRoot.StartsWith([IO.Path]::GetFullPath($env:ProgramFiles) + '\', [StringComparison]::OrdinalIgnoreCase) -or
+              (Test-Path -LiteralPath $installRoot)) { throw 'The installer test requires a fresh Program Files subdirectory.' }
+          $logs = Join-Path $env:GITHUB_WORKSPACE 'out/release/installer-logs'
+          [void][IO.Directory]::CreateDirectory($logs)
+          $public = Join-Path $env:GITHUB_WORKSPACE "out/release/artifacts/TaskbarStyler-$env:RELEASE_VERSION-win-x64-setup.exe"
+          $test = Join-Path $env:GITHUB_WORKSPACE "out/release/installer-test/TaskbarStyler-$env:RELEASE_VERSION-win-x64-installer-test.exe"
+          $uninstaller = Join-Path $installRoot 'uninstall/unins000.exe'
+          $common = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/LANG=english', ('/DIR="' + $installRoot + '"'))
+          function Invoke-Installer([string]$Executable, [string[]]$Arguments) {
+            $process = Start-Process -FilePath $Executable -ArgumentList $Arguments -WindowStyle Hidden -Wait -PassThru
+            try { return $process.ExitCode } finally { $process.Dispose() }
+          }
+          function Assert-Uninstalled {
+            $exit = Invoke-Installer $uninstaller @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', ('/LOG="' + (Join-Path $logs 'uninstall.log') + '"'))
+            if ($exit -notin @(0, 3010)) { throw "Uninstall failed: $exit" }
+            if (Test-Path -LiteralPath (Join-Path $installRoot "versions/$env:RELEASE_VERSION/TaskbarStyler.Tap.dll")) {
+              throw 'The unloaded test payload was not removed.'
+            }
+          }
+          $registry = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, [Microsoft.Win32.RegistryView]::Registry64)
+          $key = $registry.CreateSubKey('Software\Microsoft\XAML\Debug')
+          $name = 'DisableCompositionDiag'
+          $existed = $name -in $key.GetValueNames()
+          if ($existed) { $original = $key.GetValue($name, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames); $kind = $key.GetValueKind($name) }
+          $personal = @(
+            (Join-Path $env:APPDATA 'TaskbarStyler/config.json'),
+            (Join-Path $env:LOCALAPPDATA 'TaskbarStyler/log.txt')
+          )
+          $backups = @{}
+          foreach ($path in $personal) {
+            $backups[$path] = if (Test-Path -LiteralPath $path) { [IO.File]::ReadAllBytes($path) } else { $null }
+            [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($path))
+            [IO.File]::WriteAllText($path, 'installer preservation fixture')
+          }
+          $fixtureHashes = @{}; foreach ($path in $personal) { $fixtureHashes[$path] = (Get-FileHash -LiteralPath $path).Hash }
+          try {
+            # The public binary must reject Server before any installation.
+            $exit = Invoke-Installer $public ($common + ('/LOG="' + (Join-Path $logs 'public-server-rejection.log') + '"'))
+            if ($exit -eq 0 -or (Test-Path -LiteralPath $installRoot)) { throw 'The public installer accepted Windows Server.' }
+            # A conflicting preexisting shared value is never overwritten.
+            $key.SetValue($name, 0, [Microsoft.Win32.RegistryValueKind]::DWord)
+            $exit = Invoke-Installer $test ($common + '/ACCEPTPREREQUISITE=1' + ('/LOG="' + (Join-Path $logs 'conflicting-prerequisite.log') + '"'))
+            if ($exit -eq 0 -or $key.GetValue($name) -ne 0 -or (Test-Path -LiteralPath $installRoot)) { throw 'A conflicting prerequisite was not preserved.' }
+            # A fresh install must not write this shared value without consent.
+            $key.DeleteValue($name, $false)
+            $exit = Invoke-Installer $test ($common + ('/LOG="' + (Join-Path $logs 'missing-consent.log') + '"'))
+            if ($exit -eq 0 -or $name -in $key.GetValueNames() -or (Test-Path -LiteralPath $installRoot)) { throw 'Missing prerequisite consent was not enforced.' }
+            $exit = Invoke-Installer $test ($common + '/ACCEPTPREREQUISITE=1' + ('/LOG="' + (Join-Path $logs 'install.log') + '"'))
+            if ($exit -notin @(0, 3010)) { throw "Installation failed: $exit" }
+            if ($key.GetValue($name) -ne 1) { throw 'The authorized prerequisite was not created.' }
+            $payload = Join-Path $installRoot "versions/$env:RELEASE_VERSION"
+            $source = (Resolve-Path 'out/release/app').Path
+            $files = @(Get-ChildItem -LiteralPath $source -File -Recurse)
+            if (@(Get-ChildItem -LiteralPath $payload -File -Recurse).Count -ne $files.Count) { throw 'Installed payload file count differs.' }
+            foreach ($file in $files) {
+              $relative = [IO.Path]::GetRelativePath($source, $file.FullName)
+              $installed = Join-Path $payload $relative
+              if (-not (Test-Path -LiteralPath $installed) -or
+                  (Get-FileHash -LiteralPath $file.FullName).Hash -ne (Get-FileHash -LiteralPath $installed).Hash) {
+                throw "Installed payload differs: $relative"
+              }
+            }
+            $shortcut = Join-Path ([Environment]::GetFolderPath('CommonStartMenu')) 'Programs/Taskbar Styler/Taskbar Styler.lnk'
+            if (-not (Test-Path -LiteralPath $shortcut)) { throw 'The Start menu shortcut was not created.' }
+            if (Get-Process -Name 'TaskbarStyler.Tray' -ErrorAction SilentlyContinue) { throw 'Setup unexpectedly launched the application.' }
+            Assert-Uninstalled
+            if ($key.GetValue($name) -ne 1) { throw 'Uninstall removed the shared prerequisite.' }
+            foreach ($path in $personal) {
+              if ((Get-FileHash -LiteralPath $path).Hash -ne $fixtureHashes[$path]) { throw "Personal data changed: $path" }
+            }
+            'Installer payload and lifecycle tests passed. No XAML application was run on Windows Server.'
+          } finally {
+            if (Test-Path -LiteralPath $uninstaller) {
+              $null = Invoke-Installer $uninstaller @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART')
+            }
+            if ($existed) { $key.SetValue($name, $original, $kind) } else { $key.DeleteValue($name, $false) }
+            $key.Dispose(); $registry.Dispose()
+            foreach ($path in $personal) {
+              if ($null -ne $backups[$path]) { [IO.File]::WriteAllBytes($path, $backups[$path]) }
+              else { Remove-Item -LiteralPath $path -ErrorAction SilentlyContinue }
+            }
+          }
+
+      - name: Create portable archive, corresponding source and checksums
+        run: |
+          $artifacts = Join-Path $env:GITHUB_WORKSPACE 'out/release/artifacts'
+          $archive = Join-Path $artifacts "TaskbarStyler-$env:RELEASE_VERSION-win-x64.zip"
+          Compress-Archive -Path out/release/app/* -DestinationPath $archive -CompressionLevel Optimal
+          $source = Join-Path $artifacts "TaskbarStyler-$env:RELEASE_VERSION-source.zip"
+          git archive --format=zip "--prefix=TaskbarStyler-$env:RELEASE_VERSION/" "--output=$source" HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot archive the corresponding source.' }
+          $checksums = Get-ChildItem -LiteralPath $artifacts -File | Sort-Object Name | ForEach-Object {
+            '{0}  {1}' -f (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $_.Name
+          }
+          [IO.File]::WriteAllLines((Join-Path $artifacts 'SHA256SUMS.txt'), $checksums, [Text.UTF8Encoding]::new($false))
+
+      - name: Upload distributable artifacts only
+        uses: actions/upload-artifact@v4
+        with:
+          name: TaskbarStyler-${{ steps.version.outputs.value }}-win-x64
+          path: out/release/artifacts/*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload installer test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-test-logs
+          path: out/release/installer-logs/*.log
+          if-no-files-found: ignore
+          retention-days: 7
