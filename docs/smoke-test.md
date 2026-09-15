@@ -146,3 +146,46 @@ Não há guarda de valores negativos: a revisão final manteve a decisão de
 registrar essa transição sem introduzir uma lista geral de propriedades que
 rejeitam negativos (decisão 11 e retomada em
 `docs/superpowers/plano-3b-decisoes.md`).
+
+## Plano 4 — bandeja e ciclo de vida
+
+Compilar o nativo, executar `tools/build-tray.ps1` e copiar o pacote inteiro
+para uma pasta isolada com espaços no nome. Usar o executável dessa cópia.
+Preservar `config.json` antes do teste e restaurar seus bytes ao terminar.
+
+1. Iniciar com tema vazio: um único ícone, estado Inativo. Segunda instância
+   deve abrir o diagnóstico existente e encerrar sem outro ícone, inclusive
+   se a janela estiver minimizada. Menu mostra os temas selecionáveis e conserva
+   o `&` dos nomes de apresentação.
+2. Selecionar Command_Center, conferir aplicação real e estatísticas novas no
+   log do PID atual. Trocar de tema sem reiniciar Explorer. Uma configuração
+   `command_center` escrita pelo CLI também deve ser reconhecida e marcada.
+3. Abrir/fechar Task View e outros hosts; desativar. Confirmar restauração nas
+   threads alcançadas, assinatura encerrada, hook removido e timers parados.
+   Abrir novos hosts já em reset não deve reativar estilos. Aplicar novamente.
+4. Com tema ativo, usar Reiniciar o Explorer no menu. Confirmar PID novo,
+   recuperação do ícone, carga e aplicação sem intervenção. Registrar PIDs,
+   timestamps e identidade/hash da DLL efetivamente carregada.
+5. Provocar falha controlada de carga num processo novo, por exemplo usando
+   um pacote de teste cuja DLL esteja temporariamente indisponível. Não alterar
+   DLL carregada nem instalar outro componente. Confirmar Falhou com HRESULT;
+   após um poll de 30 s não há outra carga. Restaurar o arquivo e usar Tentar
+   novamente. Somente essa ação ou TaskbarCreated permite nova tentativa.
+6. Exportar árvore com tema ativo e novamente inativo: arquivo novo, não vazio,
+   sem snapshot concorrente com a assinatura, com retomada do estado desejado.
+   Ausência de arquivo novo é falha; não abrir silenciosamente o anterior.
+   Caso negativo: após Task View fechado em reset, uma árvore pode denunciar
+   filhos não entregues. Conferir erro, SHA/mtime anterior intactos, liberação
+   completa e falha na bandeja após 15 s. Registrar esses erros esperados
+   separadamente; uma exportação posterior válida deve recuperar normalmente.
+7. Diagnóstico: última observação do PID + criação atuais, timestamp e idade.
+   Registrar `observed`, `residual` e `incomplete` após apply, reset e export.
+   Log ausente, parcial, filtrado ou antigo deve aparecer como indisponível ou
+   desatualizado, nunca zero inventado. Residual/incompletude não são aprovados
+   como prova de ausência de vazamento.
+8. Desativar e sair: pedido de reset enviado, bandeja encerrada, visual original
+   confirmado no shell e configuração original restaurada pelo roteiro.
+
+Estes casos não validam monitor físico adicional nem estabilidade por 24 horas.
+`Ativo` no ícone informa pedido aceito; a confirmação visual vem deste smoke e
+das observações atuais, não de um canal de resposta que o projeto não possui.

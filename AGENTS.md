@@ -24,6 +24,7 @@ src/tap/    TaskbarStyler.Tap.dll — o TAP: fronteira COM (tap_boundary.cpp),
             (style_engine), setters (property_setter), blur real (blur_effects,
             blur_brush), sessão de tema (theme_session). Testes em tests/tap.
 src/cli/    taskbar-styler.exe — apply/reset/list/status/setup/unload.
+src/tray/   TaskbarStyler.Tray — WinForms/.NET 10 x64; Core/ é puro e testável.
 themes/     55 temas em JSON, gerados de vendor/ por tools/extract_themes.py
             (o CI confere byte a byte que continuam iguais à fonte).
 docs/       spec, planos, registros de decisões, smoke-test.md, STATUS.md.
@@ -86,6 +87,13 @@ cmd /c "... VsDevCmd.bat ... && ...\CMake\bin\ctest.exe --test-dir build --outpu
 - Suítes: `core` e `tap` (contagens atuais em `docs/STATUS.md`); todas verdes
   antes de qualquer commit.
 - `python -m pytest tools/ -q` para as ferramentas de conversão de temas.
+- Bandeja: `dotnet build src/tray/TaskbarStyler.Tray.csproj -c Release` e
+  `dotnet run --project tests/tray/TaskbarStyler.Tray.Tests.csproj -c Release`.
+  O runner C# é executável e não usa pacotes de teste externos. Publicação:
+  `tools/build-tray.ps1`, depois do build CMake; pacote em `out/tray`.
+- Antes de usar `dotnet`, definir no processo `DOTNET_CLI_TELEMETRY_OPTOUT=1`,
+  `DOTNET_GENERATE_ASPNET_CERTIFICATE=false` e `DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1`.
+  Não instalar certificados nem dependências globais implicitamente.
 - **`LNK1168` ao relinkar o TAP** = o explorer ainda tem a DLL carregada.
   Reinicie o explorer; isso é autorizado neste projeto. O comando `unload`
   apenas explica essa operação: não descarrega a DLL nem reinicia o processo.

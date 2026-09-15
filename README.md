@@ -25,9 +25,10 @@ Em desenvolvimento. O que já existe:
 - [x] TAP que carrega no explorer e exporta a árvore visual
 - [x] Aplicar e desfazer estilos (Plano 3)
 - [x] Blur de composição real e variáveis de estilo por elemento (Plano 3b)
-- [ ] O aplicativo de bandeja (Plano 4)
+- [x] O aplicativo de bandeja (Plano 4)
 
-O Plano 3b aguarda o ensaio adversarial do reinício do Explorer antes do merge.
+O Plano 4 está concluído, com bandeja WinForms, recuperação do Explorer e
+validação do ciclo de vida do TAP. Testes de longa duração continuam pendentes.
 Estado e pendências: [docs/STATUS.md](docs/STATUS.md).
 
 ## Compilando
@@ -39,6 +40,28 @@ cmake -S . -B build -G Ninja
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
+
+A bandeja usa o SDK .NET 10:
+
+```powershell
+dotnet run --project tests/tray/TaskbarStyler.Tray.Tests.csproj --configuration Release
+./tools/build-tray.ps1
+./out/tray/TaskbarStyler.Tray.exe
+```
+
+O pacote em `out/tray` pode ser copiado inteiro para outra pasta. Ele exige
+o **.NET Desktop Runtime 10 x64** instalado e contém DLL, temas e créditos.
+Não há instalador, autostart nem atualização automática.
+
+O menu permite selecionar tema, desativar, tentar novamente após falha,
+exportar uma árvore nova, abrir diagnóstico/log e reiniciar o Explorer.
+`Desativar e sair` envia reset antes de encerrar a bandeja. `Ativo` informa
+pedido aceito; falhas de regras e a última contagem observada ficam no
+diagnóstico. Nenhuma carga falha é repetida pelo poll de segurança.
+Executar o programa novamente abre o diagnóstico da instância existente;
+o botão `Abrir menu` também dá acesso aos comandos quando o ícone está oculto.
+Uma exportação parcial preserva a última árvore válida; sem arquivo novo em
+15 s, a janela de diagnóstico informa a falha e indica o log do TAP.
 
 ## Vendo a árvore visual
 
