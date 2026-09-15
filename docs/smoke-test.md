@@ -154,10 +154,10 @@ para uma pasta isolada com espaços no nome. Usar o executável dessa cópia.
 Preservar `config.json` antes do teste e restaurar seus bytes ao terminar.
 
 1. Iniciar com tema vazio: um único ícone, estado Inativo. Segunda instância
-   deve abrir o diagnóstico existente e encerrar sem outro ícone, inclusive
+   deve abrir o catálogo existente e encerrar sem outro ícone, inclusive
    se a janela estiver minimizada. Menu mostra os temas selecionáveis e conserva
    o `&` dos nomes de apresentação.
-2. Selecionar Command_Center, conferir aplicação real e estatísticas novas no
+2. Selecionar Command_Center e clicar Aplicar tema, conferir aplicação real e estatísticas novas no
    log do PID atual. Trocar de tema sem reiniciar Explorer. Uma configuração
    `command_center` escrita pelo CLI também deve ser reconhecida e marcada.
 3. Abrir/fechar Task View e outros hosts; desativar. Confirmar restauração nas
@@ -189,3 +189,20 @@ Preservar `config.json` antes do teste e restaurar seus bytes ao terminar.
 Estes casos não validam monitor físico adicional nem estabilidade por 24 horas.
 `Ativo` no ícone informa pedido aceito; a confirmação visual vem deste smoke e
 das observações atuais, não de um canal de resposta que o projeto não possui.
+
+## Plano 5 — catálogo e prévia
+
+1. Abrir aplicativo: catálogo imediatamente acessível, sem aguardar carga
+   nativa. Tema configurado e tema em prévia são estados distintos.
+2. Buscar por nome/autor, limpar, navegar com teclado e usar Ctrl+F. Resultado
+   vazio desabilita Aplicar e explica como recuperar a lista.
+3. Selecionar outro tema e alternar Fundo Claro/Escuro: hash de config idêntico,
+   nenhum pedido de aplicação. A legenda deve identificar a ilustração.
+4. Aplicar explicitamente e conferir config/log; restaurar padrão e reaplicar.
+   Durante a operação, não admitir segundo comando concorrente.
+5. Em harness sem shell: erro de reset depois de config vazia mantém retry;
+   JSON/UTF-8/surrogate inválido só torna a prévia indisponível.
+6. Redimensionar até mínimo e maximizar; conferir ações e prévia visíveis.
+   Fechar/Escape oculta a janela; segunda execução reabre a mesma instância.
+7. Restaurar config original e registrar PID, hashes, screenshot, contagem
+   de processos e limites. Esta etapa não valida monitores físicos nem 24 h.

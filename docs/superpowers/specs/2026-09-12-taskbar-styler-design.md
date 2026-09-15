@@ -1,7 +1,7 @@
 # Taskbar Styler — documento de design
 
 **Data:** 2026-09-12
-**Status:** aprovado, aguardando plano de implementação
+**Status:** aprovado; implementado pelos Planos 1–5, com limites de validação em `docs/STATUS.md`
 
 ## 1. Contexto e motivação
 
@@ -34,6 +34,8 @@ Duas observações que motivaram decisões deste design:
 - Sobreviver a reinício do explorer, múltiplos monitores e flyouts.
 - Desfazer o tema, restaurando os valores originais.
 - Exportar a árvore visual, para o usuário conseguir corrigir seletores sozinho.
+- Catálogo visual com busca e prévia ilustrativa antes da aplicação (Plano 5,
+  pedido do dono em 2026-09-15).
 
 ### Fora
 
@@ -466,6 +468,26 @@ regra, independentemente de ela ter gerado diagnóstico.
 Isso espelha a tolerância por alvo do upstream; o que muda é que o core nunca fica calado a
 respeito — onde o upstream apenas loga e segue, `Theme::diagnostics` torna o fato auditável pelo
 chamador, cumprindo o "reporta" deste parágrafo em vez de deixá-lo implícito.
+
+### 7.7 Catálogo e prévia — extensão do Plano 5
+
+O pedido de 2026-09-15 acrescenta uma janela de personalização à bandeja:
+busca por nome/autor, seleção de tema, prévia e aplicação explícita. Primeira
+execução, segunda execução e clique esquerdo no ícone abrem essa janela.
+Fechar ou Escape a escondem; o app permanece na bandeja. A janela aparece
+antes de aguardar a carga nativa. Diagnóstico e ferramentas ficam em acesso
+secundário.
+
+Selecionar ou filtrar não grava configuração nem sinaliza o TAP. A seleção de
+prévia é independente do tema configurado. Aplicar e restaurar ficam bloqueados
+durante uma operação; uma falha de reset mantém a possibilidade de repetir,
+mesmo depois de a configuração vazia ter sido gravada.
+
+A prévia é ilustrativa e offline, desenhada a partir de indicações limitadas
+dos JSONs (fundo, opacidade, cantos e quatro layouts). Não interpreta todo o
+XAML, não consulta a árvore viva e não promete fidelidade de efeitos ou pixels.
+Fundos claro/escuro alteram somente a ilustração. Arquivo inválido, UTF-8
+inválido ou surrogate isolado produzem prévia indisponível sem falhar a bandeja.
 
 ## 8. Testes
 

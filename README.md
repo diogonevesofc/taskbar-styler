@@ -26,10 +26,13 @@ Em desenvolvimento. O que já existe:
 - [x] Aplicar e desfazer estilos (Plano 3)
 - [x] Blur de composição real e variáveis de estilo por elemento (Plano 3b)
 - [x] O aplicativo de bandeja (Plano 4)
+- [x] Catálogo visual com busca e prévia antes de aplicar (Plano 5)
 
 O Plano 4 está concluído, com bandeja WinForms, recuperação do Explorer e
 validação do ciclo de vida do TAP. Testes de longa duração continuam pendentes.
 Estado e pendências: [docs/STATUS.md](docs/STATUS.md).
+
+![Catálogo de temas com prévia ilustrativa](docs/images/theme-browser.png)
 
 ## Compilando
 
@@ -53,13 +56,21 @@ O pacote em `out/tray` pode ser copiado inteiro para outra pasta. Ele exige
 o **.NET Desktop Runtime 10 x64** instalado e contém DLL, temas e créditos.
 Não há instalador, autostart nem atualização automática.
 
-O menu permite selecionar tema, desativar, tentar novamente após falha,
+Ao abrir o aplicativo, a janela mostra os temas disponíveis. Busque por nome ou
+autor, selecione um tema e compare a prévia nos fundos claro e escuro. Só o
+botão **Aplicar tema** altera a barra; **Restaurar padrão** desativa o tema.
+A prévia é uma ilustração offline derivada dos JSONs: simplifica efeitos e
+geometria, não é uma captura nem uma reprodução exata da sua taskbar. Alternar
+o fundo da prévia não altera o modo claro/escuro do Windows.
+
+O menu permite abrir a prévia de um tema, desativar, tentar novamente após falha,
 exportar uma árvore nova, abrir diagnóstico/log e reiniciar o Explorer.
 `Desativar e sair` envia reset antes de encerrar a bandeja. `Ativo` informa
 pedido aceito; falhas de regras e a última contagem observada ficam no
 diagnóstico. Nenhuma carga falha é repetida pelo poll de segurança.
-Executar o programa novamente abre o diagnóstico da instância existente;
-o botão `Abrir menu` também dá acesso aos comandos quando o ícone está oculto.
+Fechar a janela mantém o aplicativo na bandeja. Executar o programa novamente
+ou clicar no ícone abre o catálogo da mesma instância. `Diagnóstico` reúne os
+detalhes técnicos; seu botão `Ferramentas` dá acesso aos comandos avançados.
 Uma exportação parcial preserva a última árvore válida; sem arquivo novo em
 15 s, a janela de diagnóstico informa a falha e indica o log do TAP.
 

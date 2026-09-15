@@ -1,6 +1,6 @@
 # Estado do trabalho
 
-Atualizado em 2026-09-14. Este é o documento de passagem de bastão: onde o
+Atualizado em 2026-09-15. Este é o documento de passagem de bastão: onde o
 trabalho parou, o que já está decidido e o que falta fazer, em ordem.
 
 Leia antes: `AGENTS.md` na raiz (restrições invioláveis, como compilar e testar,
@@ -15,6 +15,7 @@ como o trabalho é organizado).
 | 3 | Aplicar e desfazer estilos; assinatura permanente; CLI `apply/reset` | mesclado em `main` |
 | 3b | Fidelidade: blur real, variáveis de estilo, reciclagem, timeout no fan-out | concluído; gate operacional encerrado; integração local por fast-forward |
 | 4 | App de bandeja em C# .NET 10, sempre ligado, sobrevive a restart do explorer | concluído e revisado; integração local por fast-forward |
+| 5 | Catálogo visual com busca e prévia antes de aplicar | concluído e revisado; integração local por fast-forward |
 
 `origin/main` permanece em `be0d3e6` e `origin/plano-3b-fidelidade` em
 `0db9622`. A entrega local do Plano 3b inclui correções em `27ff1a8`,
@@ -22,7 +23,29 @@ documentação em `c2a3607`, correção do reset entre threads em `bfe330d` e o
 registro final do gate. A integração em `main` usa fast-forward do branch
 `plano-3b-fidelidade`, sem commit direto em `main` nem push.
 
-## Plano 4 — entrega atual
+## Plano 5 — entrega atual
+
+Janela de personalização com busca por nome/autor, catálogo de 54 temas,
+prévia offline e botões explícitos de aplicar/restaurar. A seleção e o fundo
+claro/escuro da prévia não alteram o Windows. Fechar mantém a bandeja;
+executar novamente reabre a mesma janela. Diagnóstico é acesso secundário.
+
+Prévia ilustrativa derivada dos JSONs, com quatro layouts e limites explícitos.
+Não é uma captura da taskbar nem substitui o teste visual do tema aplicado.
+TAP inalterado. Pacote: `out/tray/TaskbarStyler.Tray.exe`.
+
+Build/publish sem warnings, 58 testes C#, CTest core/TAP verdes e 23 verificações
+de UI em harness STA; 100 trocas de prévia com GDI 53 → 53. Smoke real de busca,
+prévia clara/escura, apply, reset e reabertura executado no Explorer PID 20712.
+Config original DockLike restaurada byte a byte; nova janela deixada aberta.
+
+Plano: [tarefas](superpowers/plans/2026-09-15-plano-5-interface-preview.md).
+Evidências e limites: [decisões](superpowers/plano-5-decisoes.md).
+Clique físico no ícone, matriz controlada de monitores/DPI/hot-plug e 24 h
+continuam pendentes. O ledger desta sessão marcou `incomplete=1`; esta entrega
+de UI não revalida o gate de cobertura do diagnóstico nativo. Sem push.
+
+## Plano 4 — histórico da entrega
 
 Plano: `docs/superpowers/plans/2026-09-14-plano-4-app-bandeja.md`.
 Registro completo: `docs/superpowers/plano-4-decisoes.md`.
