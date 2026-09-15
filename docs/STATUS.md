@@ -16,7 +16,7 @@ como o trabalho é organizado).
 | 3b | Fidelidade: blur real, variáveis de estilo, reciclagem, timeout no fan-out | concluído; gate operacional encerrado; integração local por fast-forward |
 | 4 | App de bandeja em C# .NET 10, sempre ligado, sobrevive a restart do explorer | concluído e revisado; integração local por fast-forward |
 | 5 | Catálogo visual com busca e prévia antes de aplicar | concluído e revisado; integração local por fast-forward |
-| 6 | Distribuição gratuita, instalador, fontes e README público | pacote Release validado localmente; instalador e publicação em validação no CI |
+| 6 | Distribuição gratuita, instalador, fontes e README público | publicado: `v0.1.0-beta.1`, commit `99ee385`; CI e smoke do pacote final aprovados |
 
 No fechamento local anterior, `origin/main` estava em `be0d3e6` e `origin/plano-3b-fidelidade` em
 `0db9622`. A entrega local do Plano 3b inclui correções em `27ff1a8`,
@@ -41,10 +41,18 @@ O workflow compila e testa instalação/desinstalação em variante exclusiva do
 CI, porque os runners são Windows Server; o instalador público rejeita Server.
 Fonte via `git archive HEAD`, commit no pacote e SHA256SUMS vinculam a entrega.
 
-O CI, o smoke do artefato final e a publicação são as verificações restantes
-neste checkpoint. A release registra os resultados finais e o commit exato;
-não publicar artefatos de um workflow que falhou. Instalador sem assinatura
-digital. Matriz de hardware e observação de 24 h continuam pendentes.
+Entrega pública: [v0.1.0-beta.1](https://github.com/diogonevesofc/taskbar-styler/releases/tag/v0.1.0-beta.1).
+Instalador, ZIP portátil, fontes e checksums correspondem a `99ee3854`.
+[CI geral](https://github.com/diogonevesofc/taskbar-styler/actions/runs/35016178011)
+e [release](https://github.com/diogonevesofc/taskbar-styler/actions/runs/35016177411)
+aprovados, incluindo instalação/desinstalação e preservação no runner.
+
+Smoke do pacote baixado: runtime próprio, carga do TAP, busca/prévia sem mudar
+configuração, apply/reset e reabertura da mesma instância. Explorer `15848`
+permaneceu durante as operações, zero `ERR`; configuração original restaurada
+byte a byte. O aplicativo ficou aberto com o tema original. Não foi realizada
+instalação administrativa em Windows 11 limpo. Instalador sem assinatura
+digital; matriz de hardware e observação de 24 h continuam pendentes.
 
 A primeira execução remota passou no build/CTest, mas encontrou um caminho
 relativo fixo no teste C# do catálogo: `Platform=x64` acrescenta um nível à
@@ -56,6 +64,7 @@ O CI geral passou em `006d553`. Na release, a pré-checagem do Inno encontrou
 compilação real, em vez do recurso de versão do executável.
 
 Plano: [distribuição](superpowers/plans/2026-09-15-plano-6-distribuicao.md).
+Detalhes: [decisões e evidências](superpowers/plano-6-decisoes.md).
 
 ## Plano 5 — histórico da entrega
 
