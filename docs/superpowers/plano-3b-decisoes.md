@@ -195,6 +195,103 @@ mais próximo extraído para teste puro, reaplicação restrita à propriedade
 alterada e redução dos headers de composição. A guarda geral de negativos não
 foi adotada.
 
-**Gate de pré-merge ABERTO:** repro adversarial com dumps/reinícios e criação de
-hosts XAML ainda depende da decisão explícita do dono da máquina. A ausência de
+**Estado ao encerrar a rodada anterior — gate de pré-merge ABERTO:** repro
+adversarial com dumps/reinícios e criação de hosts XAML ainda depende da decisão
+explícita do dono da máquina. A ausência de
 Event 1000 não encerra essa investigação. Sem merge e sem início do Plano 4.
+
+## Retomada autorizada — 2026-09-14, após 20:08
+
+### Decisão 16 — captura funcional e repro interrompido por crash
+
+O dono autorizou configurar dumps completos e os reinícios do Explorer. A
+configuração foi gravada às 20:08:20. As chaves antes ausentes e o estado
+`WerSvc=Disabled/Stopped` foram preservados. O primeiro probe não produziu
+dump; após configurar o serviço como Manual e iniciá-lo, o probe PID 4692
+produziu memória completa validada. O ensaio só prosseguiu depois dessa prova.
+
+O primeiro roteiro corrigido falhou no Explorer PID 16800 durante Task View
+após o terceiro reset. Houve três applies/três resets efetivos e apenas cinco
+fases completas do harness, sete hosts novos após reset e zero `ERR` do TAP.
+O dump completo de 738.013.155 bytes e o evento 1000 identificam
+`0xC000027B` em `Windows.UI.Xaml.dll+0x90e383`; a exceção armazenada contém
+`0x80070057`, thread 24196. A pilha simbolizada chega à ativação do gerenciador
+de Direct Manipulation. O HWND inválido não foi recuperado; isso não prova
+que o compositor do blur causou a falha.
+
+O gate foi reprovado naquele ponto. Os controles posteriores, dez ciclos de
+Task View sem TAP e dez com TAP vazio no PID 17984, passaram; eles não repetem
+o histórico de aplicar e retirar estilos que antecedeu o crash. Dump, DLL e
+PDB originais foram preservados por hash. Os detalhes estão em
+[plano-3b-repro-explorer.md](plano-3b-repro-explorer.md).
+
+### Decisão 17 — reset por thread, independente dos hosts atuais
+
+Defeito confirmado: `GetXamlHostWnds()` enumerava hosts top-level existentes
+no momento do reload. Depois de fechar um flyout, sua thread podia continuar
+com estado estilizado, sem uma janela enumerável para receber o reset. A
+thread 24196 recebeu estilos no repro; os resets posteriores só registravam
+restauração da principal. O mecanismo é verificável no código, mas sua relação
+causal com o crash continua pendente de prova.
+
+Correção em **`bfe330d`**: uma janela própria `HWND_MESSAGE` por thread serve
+de destino persistente do despacho; a enumeração usa classe privada e PID.
+A destruição da janela não chama COM/XAML. Restauração incompleta mantém o
+tema retirado e impede substituir tema/sessão, inclusive em `SetSite(site)`.
+Callbacks não reaplicam o tema retirado durante esse intervalo; a captura do
+valor original ainda acompanha alterações feitas pelo shell.
+
+Dois testes Win32 cobrem o destino após fechamento do host, deduplicação,
+limpeza ao sair da thread e callback que falha sem escapar do loop. Build
+`/W4` sem warnings novos; core **129/129** (7808 asserções), TAP **32/32**
+(109 asserções), Python **22/22**. Revisão independente encerrada após as
+correções do valor original e da barreira de recarga. DLL SHA-256:
+`9EE5F1BAC8FE23F86C77B73F63F0E535C2833AB62871CCB5EF5E8E852EF25DE3`.
+
+### Novo ensaio — 30 pares completos e observação final concluída
+
+Task View foi acionado em apply e reset. Os logs brutos, auditados por fase
+sem depender apenas de `phase-complete`, confirmam:
+
+| Sessão | PID | Dez pares | Hosts apply / reset | Principal / Task View |
+|---|---|---|---|---|
+| 101 | 25616 | 20:37:34–20:39:47 | 20 / 20 | 1868 / 17900 |
+| 102 | 24572 | 20:40:15–20:42:26 | 21 / 20 | 8684 / 5676 |
+| 103 | 25984 | 20:44:24–20:46:29 | 20 / 20 | 13484 / 10052 |
+
+**30 pares, 60 operações carregadas, 121 hosts novos, zero `ERR`, falhas ou
+fallbacks registrados.** Cada fase tem estatísticas novas na principal, com
+applies não vazios e resets vazios. Cada um dos **57 reloads** restaurou também
+a thread de Task View antes de parar a assinatura anterior. Os dez resets por
+sessão retiraram elementos dessa thread; as nove reaplicações seguintes
+encontraram zero elementos nela. Isso confirma o alcance do reset no cenário;
+não transforma `held` em contador global nem prova ausência universal de crash.
+
+**Falha de pré-carga da 103:** às 20:42:53, a primeira tentativa retornou
+`0x80070490 (ERROR_NOT_FOUND)`. O TAP estava ausente e o PID 25984 permaneceu
+estável. Após inspeção, uma tentativa explícita no mesmo PID carregou via
+`VisualDiagConnection1` às 20:44:24. Contar **20 operações carregadas mais
+uma tentativa de pré-carga falha** nessa sessão; a causa exata do erro de
+conexão não foi confirmada. Não omitir essa falha nem atribuí-la à execução
+da nova DLL.
+
+**Gate encerrado no cenário executado:** a sessão 104 acompanhou o PID 25984
+em reset de **20:46:48.693 a 20:52:12.888**, por **324,208 segundos**. As 22
+amostras mantiveram o PID e zero `ERR`. Task View após 289,178 segundos gerou
+dois hosts às 20:51:37.968 e 20:51:37.980, sem falhas ou fallbacks positivos.
+O acompanhamento continuou por cerca de 35 segundos após esse estímulo.
+São **123 hosts**, incluindo os 121 dos pares e os dois tardios.
+
+A conferência às 20:56:48 não encontrou novo dump ou Application Error 1000
+do Explorer. Os três Winlogon 1002 desde 20:35 correspondem aos reinícios
+intencionais previamente registrados no journal.
+
+Às **20:55:46**, as duas chaves temporárias de LocalDumps foram removidas e
+`WerSvc` voltou a **Disabled/Stopped**. A verificação às **20:56:30** confirmou
+esse estado, config original idêntico por SHA-256, reset nas duas threads,
+PID preservado e nenhum probe aberto. A captura final mostra o visual padrão;
+dump, DLL e PDB do crash foram preservados.
+
+Integração local por fast-forward de `plano-3b-fidelidade`, sem push. O Plano 4
+continua não iniciado. O ensaio não prova a causalidade do crash histórico,
+ausência de vazamento nem os cenários manuais pendentes.

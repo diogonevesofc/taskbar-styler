@@ -13,13 +13,14 @@ como o trabalho é organizado).
 | 1 | `styler_core`: seletores, regras, temas; 55 temas convertidos byte a byte | mesclado em `main` |
 | 2 | TAP carrega no explorer; exporta a árvore visual | mesclado em `main` |
 | 3 | Aplicar e desfazer estilos; assinatura permanente; CLI `apply/reset` | mesclado em `main` |
-| 3b | Fidelidade: blur real, variáveis de estilo, reciclagem, timeout no fan-out | código revisado e smoke concluído; **gate de pré-merge aberto** |
+| 3b | Fidelidade: blur real, variáveis de estilo, reciclagem, timeout no fan-out | concluído; gate operacional encerrado; integração local por fast-forward |
 | 4 | App de bandeja em C# .NET 10, sempre ligado, sobrevive a restart do explorer | não iniciado |
 
-`main` = `be0d3e6` (em `origin`). `origin/plano-3b-fidelidade` está em
-`0db9622`: o handoff anterior já foi enviado. A retomada está em commits
-locais de `plano-3b-fidelidade`: correções em `27ff1a8` e documentação de
-fechamento em seguida. Nenhum merge nem push foi feito nesta retomada.
+`origin/main` permanece em `be0d3e6` e `origin/plano-3b-fidelidade` em
+`0db9622`. A entrega local do Plano 3b inclui correções em `27ff1a8`,
+documentação em `c2a3607`, correção do reset entre threads em `bfe330d` e o
+registro final do gate. A integração em `main` usa fast-forward do branch
+`plano-3b-fidelidade`, sem commit direto em `main` nem push.
 
 ## Plano 3b — onde parou
 
@@ -36,18 +37,21 @@ Decisões e histórico de execução: `docs/superpowers/plano-3b-decisoes.md`.
 | 6 | Capturas `Prop=>Var` e valores dinâmicos no TAP | concluída, revisada | `844a4b7`, `127e8fe` |
 | 7 | Reciclagem do `ItemsRepeater` | spike concluído; sem defeito observável no cenário; sem código adicional | `plano-3b-spike-reciclagem.md` |
 
-Validação da retomada: build completo com 0 warnings novos sob `/W4`;
-`ctest --verbose` com **core 129/129** (7808 asserções) e **tap 30/30**
-(92 asserções), saída 0. Os 55 temas continuam iguais byte a byte após
-extração; verificações de APIs proibidas e projeção WinUI sem ocorrências;
-includes WinRT continuam concentrados em `winrt_common.h`. `pytest tools/`
-teve 22 testes verdes nesta retomada. Smoke final das correções concluído;
-evidências e limites na seção abaixo.
+Validação mais recente (`bfe330d`): build completo com 0 warnings novos sob
+`/W4`; **core 129/129** (7808 asserções), **tap 32/32** (109 asserções) e
+**Python 22/22**, saída 0. A validação anterior confirmou os 55 temas iguais
+byte a byte após extração, verificações de APIs proibidas e projeção WinUI sem
+ocorrências, e includes WinRT concentrados em `winrt_common.h`. Smoke anterior
+e 30 pares adversariais do novo artefato concluídos; observação final em reset
+de **5min24s** também concluída, com PID preservado e zero erros registrados.
 
 As implementações das Tasks 1 a 6 passaram por revisão independente e correções.
 A revisão final encontrou os problemas adicionais descritos abaixo, já
-corrigidos e re-revisados. O gate operacional do reinício de Explorer continua
-aberto; revisão estática e suíte verde não o encerram.
+corrigidos e re-revisados. O ensaio autorizado depois disso reproduziu um crash
+e revelou uma lacuna no alcance do reset, corrigida e revisada em `bfe330d`.
+O gate operacional foi encerrado após a reexecução, a observação final e a
+restauração verificada das configurações. O resultado vale para o cenário
+executado; não demonstra a causa exata do crash nem ausência universal de falhas.
 
 O que o Plano 3b já entregou, verificado ao vivo: blur de composição real
 (borrão gaussiano, tinta, saturação, luminosidade e ruído) em vez da aproximação
@@ -148,13 +152,85 @@ restaurada byte a byte, conferida por SHA-256. Evidências locais:
 `final-stability.csv`, `final-smoke-log-before-rotation.txt`,
 `final-reset.png` e `final-reset.log` no scratch do Plano 3b.
 
+### Gate autorizado — crash capturado, correção e novo ensaio
+
+Após autorização explícita do dono, os dumps completos foram configurados às
+20:08. O primeiro probe não gerou dump com `WerSvc` desabilitado; após mudar o
+serviço para Manual e iniciá-lo, o probe PID 4692 produziu um dump completo
+validado. As chaves e o estado anterior do serviço foram preservados.
+
+O Explorer **PID 16800** falhou às 20:23 durante Task View após o terceiro reset:
+três applies e três resets efetivos, mas apenas cinco fases completas do
+harness; sete hosts novos, todos após reset, e zero `ERR` do TAP. O dump e o
+evento 1000 identificam `0xC000027B` em `Windows.UI.Xaml.dll+0x90e383`, com
+exceção armazenada `0x80070057` na thread **24196**. A pilha simbolizada chega
+a `IDirectManipulationManager::Activate(m_hWnd)`; o HWND exato não foi
+recuperado. Isso não atribui a falha ao blur nem estabelece a causa do incidente
+histórico das 14:13. O primeiro ensaio reprovou o gate.
+
+Foi confirmado um defeito independente: o reset enumerava hosts top-level
+atuais, deixando de alcançar threads com estado após seus flyouts fecharem.
+`bfe330d` cria um destino `HWND_MESSAGE` por thread, restaura por esses destinos
+e impede trocar tema/sessão quando a restauração fica incompleta. Callbacks
+não reaplicam o tema retirado durante o reset; a captura do valor original
+continua acompanhando mudanças feitas pelo shell. Dois testes Win32 novos e
+a revisão independente cobrem a correção. Sua relação causal com o crash
+capturado permanece uma hipótese, não uma conclusão extraída do dump.
+
+Nova DLL SHA-256:
+`9EE5F1BAC8FE23F86C77B73F63F0E535C2833AB62871CCB5EF5E8E852EF25DE3`.
+Task View foi exercitado em ambos os estados, com eventos adicionais de
+abertura/fechamento de probes. Auditoria independente do log bruto confirmou:
+
+| Sessão | PID | Intervalo dos 10 pares | Hosts em apply / reset | Thread principal / Task View |
+|---|---|---|---|---|
+| 101 | 25616 | 20:37:34–20:39:47 | 20 / 20 | 1868 / 17900 |
+| 102 | 24572 | 20:40:15–20:42:26 | 21 / 20 | 8684 / 5676 |
+| 103 | 25984 | 20:44:24–20:46:29 | 20 / 20 | 13484 / 10052 |
+
+São **30 pares / 60 operações carregadas**, **121 hosts novos**, zero `ERR`,
+zero falhas e zero fallbacks registrados. Cada uma das 60 fases tem novas
+estatísticas na thread principal; cada um dos 57 reloads após a carga inicial
+restaurou também a thread de Task View antes de parar a assinatura anterior.
+Os resets seguintes à aplicação restauraram estado nessa thread; as
+reaplicações após reset encontraram zero elementos para restaurar.
+
+**Falha de pré-carga preservada:** na sessão 103, a primeira tentativa às
+20:42:53 retornou `0x80070490 (ERROR_NOT_FOUND)`, antes de carregar o TAP.
+A inspeção encontrou a DLL ausente e o PID 25984 estável. Uma nova tentativa
+explícita no mesmo PID carregou via `VisualDiagConnection1` às 20:44:24 e só
+então começaram os dez pares válidos. Portanto, houve **60 operações com TAP
+carregado mais uma tentativa de pré-carga falha**. A causa exata dessa falha
+de conexão não foi confirmada; ela não deve ser apagada do resultado nem
+descrita como crash da nova DLL.
+
+**Observação final concluída:** sessão 104, PID 25984, de **20:46:48.693 a
+20:52:12.888**, total de **324,208 segundos**. As 22 amostras mantiveram o PID
+e zero `ERR`. Task View foi acionado após 289,178 segundos, criando dois hosts
+às 20:51:37.968 e 20:51:37.980; o acompanhamento continuou por cerca de 35
+segundos. Total: **121 hosts nos 30 pares mais dois tardios, 123 ao todo**.
+Essa janela não é o teste separado de dez minutos em repouso.
+
+A conferência final às **20:56:48** não encontrou novo dump nem Application
+Error 1000 do Explorer desde 20:35. Os três Winlogon 1002 desse
+intervalo correspondem aos reinícios intencionais registrados antes dos comandos.
+
+**Fechamento operacional concluído:** às 20:55:46, as duas chaves temporárias
+de LocalDumps foram removidas e `WerSvc` voltou a Disabled/Stopped, como no
+backup. Às 20:56:30, o config original (`theme` vazio, `logLevel` debug) foi
+conferido byte a byte por SHA-256; o reset foi confirmado em ambas as threads,
+o visual padrão foi capturado e nenhum probe permaneceu aberto. Dumps e
+binários correspondentes foram preservados. **Gate encerrado neste cenário.**
+
+Cronologia, hashes do artefato do crash, dump, controles sem TAP/com TAP vazio
+e limites estão no [registro do repro](superpowers/plano-3b-repro-explorer.md).
+
 ## O que falta fazer, em ordem
 
-1. Resolver o **gate de pré-merge** abaixo: o repro adversarial com dumps e
-   reinícios aguarda decisão explícita do dono da máquina. Não foi executado.
-2. Com esse gate encerrado e validação completa, integrar o branch por
-   fast-forward local, preservando o registro de decisões. **Nenhum merge
-   agora; nunca commit direto em `main` nem push sem pedido do dono.**
+1. Preparar o plano do app de bandeja (Plano 4), incluindo os itens herdados
+   de ciclo de vida e instrumentação descritos abaixo.
+2. Executar os cenários manuais ainda não cobertos antes de declarar esses
+   requisitos validados. **Nunca push sem pedido explícito do dono.**
 
 Continuam parqueados, fora desta rodada: cache de `ResolveProperty`; extração
 do cálculo do capturador mais próximo para teste puro; reaplicar somente a
@@ -170,13 +246,14 @@ revisão final do Plano 3: o contador de handles VIVOS (especificação §7.2) e
 risco de deadlock em `SetSite(nullptr)` (`UnregisterWaitEx(INVALID_HANDLE_VALUE)`
 mais o ramo `!site` ignorando `Deferred`).
 
-## Questão em aberto: o reinício do explorer
+## Incidente histórico das 14:13 — causa ainda indeterminada
 
 Em 2026-09-14 às 14:13:13 o shell reiniciou, cerca de três minutos depois de um
 smoke terminar em estado de reset, cem milissegundos após uma linha
 `new XAML host` no log do TAP. Nenhum agente deu o comando.
 
-**Causa indeterminada; não há dump que a atribua ou exclua o TAP.**
+**Causa desse incidente indeterminada; não há dump das 14:13 que a atribua ou
+exclua o TAP.** O crash capturado às 20:23 está registrado separadamente acima.
 
 - Na investigação anterior não foram encontrados eventos "Application Error
   1000" correspondentes. Essa ausência não prova encerramento forçado nem
@@ -191,19 +268,13 @@ smoke terminar em estado de reset, cem milissegundos após uma linha
 - O smoke longo da Task 6, posterior, manteve o mesmo PID do começo ao fim, com
   185 elementos estilizados e aplicações e resets sucessivos.
 
-**O que ainda não foi feito:** o repro adversarial que a revisão pediu antes do
-merge. Armar captura de dump para o explorer
-(`HKLM\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\explorer.exe`,
-`DumpType=2`, precisa de elevação), depois alternar `apply Command_Center` e
-`reset` em laço enquanto se força a criação de hosts XAML novos, vigiando uma
-falha dentro de cerca de 100 ms de uma linha `new XAML host`. Um laço limpo
-rebaixa a questão; um dump apontando para a nossa DLL a promove a crítica. Isso
-reinicia o explorer várias vezes, então ficou para o dono da máquina decidir
-quando.
-
-Na retomada foi confirmado por leitura que a chave `LocalDumps\\explorer.exe`
-ainda não existe. A observação normal de dez minutos acima não substitui
-esse ensaio adversarial com captura de dump.
+Esse incidente motivou o ensaio adversarial com LocalDumps, autorizado e
+executado na rodada atual. A ausência inicial da chave de captura foi resolvida
+às 20:08; houve uma falha real às 20:23, seguida da correção do alcance do reset
+e do novo ensaio descrito acima. A proximidade de uma linha `new XAML host`
+não demonstra, sozinha, o mecanismo da falha. No novo crash, o timestamp do
+evento 1000 foi cerca de 348 ms depois da última linha; esse intervalo entre
+registros não mede o instante exato da exceção.
 
 ## Pendências de teste manual
 
