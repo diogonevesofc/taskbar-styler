@@ -1,0 +1,35 @@
+name: Relatar um problema
+description: Erro de instalação, aplicação de tema ou interface.
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Versão do Taskbar Styler
+      placeholder: 0.1.0-beta.1
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Versão e build do Windows
+      description: Consulte winver. Não inclua chave de produto.
+      placeholder: Windows 11 25H2, build 26200.9445, x64
+    validations:
+      required: true
+  - type: input
+    id: theme
+    attributes:
+      label: Tema, monitores e escala
+      placeholder: DockLike, um monitor, escala 125%
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Como reproduzir
+      description: Passos, resultado esperado e resultado observado.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Captura ou trecho de log
+      description: Revise antes de publicar. Remova informações pessoais; não envie credenciais ou dumps completos.

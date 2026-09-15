@@ -68,7 +68,7 @@ janela encerradas sem achados materiais pendentes.
 - TAP inalterado:
   `93DA4A2EFD9B493BC3631601D42228E45FB36072393AF43C00C8EF5D344101D2`.
 
-Screenshot entregue em `docs/images/theme-browser.png`. Evidências locais em
+Screenshot entregue em `docs/images/theme-browser.jpg`. Evidências locais em
 `.superpowers/sdd/2026-09-15-plano-5-interface-preview/`; harness de UI em
 `.superpowers/sdd/2026-09-14-plano-4-app-bandeja/browser-harness/results-published/`.
 

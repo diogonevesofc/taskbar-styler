@@ -1,120 +1,149 @@
-# taskbar-styler
+# Taskbar Styler
 
-Customiza a taskbar do Windows 11 sem depender do Windhawk.
+**Personalize a barra de tarefas do Windows 11. Grátis, com código aberto e sem Windhawk.**
 
-Obra derivada do mod [windows-11-taskbar-styler](https://github.com/ramensoftware/windhawk-mods)
-(m417z, GPL-3.0), reescrita como aplicativo independente.
+[Baixar a beta para Windows x64](https://github.com/diogonevesofc/taskbar-styler/releases/tag/v0.1.0-beta.1) ·
+[Ver todos os temas](THEMES.md) ·
+[Relatar um problema](https://github.com/diogonevesofc/taskbar-styler/issues/new/choose)
 
-## Como funciona
+![Catálogo de temas e prévia ilustrativa](docs/images/theme-browser.jpg)
 
-O Windows carrega uma DLL COM dentro do `explorer.exe` por meio da API de
-diagnóstico do XAML (`InitializeXamlDiagnosticsEx`) — o mesmo mecanismo do Live
-Visual Tree do Visual Studio. Essa DLL recebe a árvore visual da taskbar e
-aplica os estilos do tema escolhido.
+## O que você pode fazer
 
-**Não há injeção de DLL nem patch de código.** Nada de `CreateRemoteThread`,
-`WriteProcessMemory` ou hooks inline: apenas APIs sancionadas do Windows. E não
-há nenhum acesso à rede em runtime.
+- Escolher entre **54 temas** e buscar por nome ou autor.
+- Ver uma **prévia ilustrativa antes de aplicar**, com fundo claro ou escuro.
+- Trocar o tema sem reiniciar o Explorer e restaurar o visual padrão.
+- Manter o app na bandeja e recuperar a personalização quando o Explorer reiniciar.
+- Consultar diagnóstico e logs quando uma atualização do Windows afetar um tema.
 
-## Estado
+Sem conta, cobrança, anúncios, telemetria ou conexão de rede durante o uso.
+Não configura inicialização automática e não instala o Windhawk.
 
-Em desenvolvimento. O que já existe:
+## Instalação
 
-- [x] `styler_core` — parsing de seletores, regras de estilo e temas
-- [x] 55 temas em JSON, com conversão provada sem perda byte a byte
-- [x] TAP que carrega no explorer e exporta a árvore visual
-- [x] Aplicar e desfazer estilos (Plano 3)
-- [x] Blur de composição real e variáveis de estilo por elemento (Plano 3b)
-- [x] O aplicativo de bandeja (Plano 4)
-- [x] Catálogo visual com busca e prévia antes de aplicar (Plano 5)
+1. Abra a [página da versão](https://github.com/diogonevesofc/taskbar-styler/releases/tag/v0.1.0-beta.1).
+2. Baixe **TaskbarStyler-0.1.0-beta.1-win-x64-setup.exe**.
+3. Execute o instalador, confira a licença e conclua a instalação.
+4. Abra **Taskbar Styler** pelo menu Iniciar.
 
-O Plano 4 está concluído, com bandeja WinForms, recuperação do Explorer e
-validação do ciclo de vida do TAP. Testes de longa duração continuam pendentes.
-Estado e pendências: [docs/STATUS.md](docs/STATUS.md).
+**Requisitos:** Windows 11 **x64** e permissão de administrador para instalar.
+ARM64, Windows 10 e Windows Server não são suportados nesta versão.
+O instalador inclui o runtime .NET; não é necessário instalar .NET ou Visual
+Studio separadamente. O uso normal do aplicativo não exige administrador.
 
-![Catálogo de temas com prévia ilustrativa](docs/images/theme-browser.png)
+O instalador solicita consentimento para habilitar o pré-requisito de diagnóstico
+XAML do Windows quando ele está ausente. A configuração compartilhada existente
+é preservada; um valor incompatível bloqueia a instalação com uma explicação.
 
-## Compilando
+Esta beta ainda **não tem assinatura digital**. O Windows pode mostrar um aviso
+de editor desconhecido. Use somente os arquivos desta página de Releases;
+o arquivo SHA256SUMS.txt permite conferir a integridade do download.
 
-Requer Visual Studio 2026 com o toolchain C++ e o Windows SDK.
+### Atualizar ou desinstalar
 
-```bash
-cmake -S . -B build -G Ninja
-cmake --build build
-ctest --test-dir build --output-on-failure
-```
+Antes de atualizar, use **Diagnóstico → Ferramentas → Desativar e sair**.
+Instale a nova versão. Se uma DLL da versão anterior ainda estiver carregada,
+use **Reiniciar o Explorer** nas ferramentas do aplicativo ou reinicie o Windows.
+O instalador não força o encerramento do Explorer.
 
-A bandeja usa o SDK .NET 10:
+Para remover, desative o tema, encerre o app e use **Configurações do Windows →
+Aplicativos → Aplicativos instalados → Taskbar Styler → Desinstalar**.
+Arquivos em uso podem ser removidos no próximo reinício. Suas configurações e
+logs são preservados. O pré-requisito compartilhado do Windows também permanece.
+
+## Como usar
+
+1. Busque e selecione um tema. **Selecionar não altera a taskbar.**
+2. Compare a prévia. **Claro/Escuro** muda somente o fundo da ilustração.
+3. Clique em **Aplicar tema**. Para desfazer, use **Restaurar padrão**.
+
+Fechar a janela mantém o programa na bandeja. Clique no ícone ou execute o
+programa novamente para abrir o catálogo da mesma instância. Ctrl+F foca a
+busca; Esc fecha a janela para a bandeja.
+
+A prévia simplifica layout, ícones e efeitos. **Não é uma captura nem uma
+reprodução exata da sua barra.** O resultado depende da versão do Windows,
+do papel de parede, dos aplicativos fixados e dos seletores do tema.
+
+## Estado da beta e limitações
+
+**0.1.0-beta.1 é uma versão de testes para uso voluntário.** O app atua dentro
+do Explorer; uma incompatibilidade pode interromper ou reiniciar o shell.
+
+- Desenvolvimento e testes ao vivo em Windows 11 25H2 x64, build 26200.9445.
+- Catálogo, prévia, aplicação, reset e recuperação do Explorer foram exercitados.
+- A matriz completa de monitores/DPI, conectar/desconectar monitores e a
+  observação de 24 horas continuam pendentes.
+- Atualizações do Windows podem mudar os elementos da barra e afetar temas.
+- O estado **Ativo** indica que o pedido foi aceito; não confirma cada regra.
+
+Resultados e limites detalhados estão em [docs/STATUS.md](docs/STATUS.md).
+
+## Resolver problemas
+
+| Situação | Ação |
+|---|---|
+| O tema não mudou | Abra Diagnóstico, confira o erro e use Ferramentas → Tentar novamente. |
+| A prévia difere da barra | A prévia é ilustrativa. Confira também sua versão do Windows. |
+| “TAP de outra pasta carregado” | Desative o tema e use Ferramentas → Reiniciar o Explorer. |
+| Pré-requisito ausente | Execute novamente o instalador com permissão de administrador. |
+| O ícone está oculto | Execute o programa novamente; ele abre o catálogo existente. |
+| Quer voltar ao padrão | Use Restaurar padrão. Se o shell não responder, reinicie o Explorer ou o Windows. |
+
+Configuração: `%APPDATA%\TaskbarStyler\config.json`.
+Logs: `%LOCALAPPDATA%\TaskbarStyler\log.txt` e `tray.log`.
+O diagnóstico também permite exportar a árvore visual para investigar um tema.
+Ao abrir uma issue, revise os logs e compartilhe apenas o necessário.
+
+## Código-fonte e compilação
+
+O código desta versão está na [tag v0.1.0-beta.1](https://github.com/diogonevesofc/taskbar-styler/tree/v0.1.0-beta.1).
+O arquivo de fontes da release corresponde ao commit usado para o instalador.
+
+Requisitos de desenvolvimento: Visual Studio com **Desenvolvimento para desktop
+com C++**, Windows SDK 10.0.26100.0 ou compatível, CMake 3.25+, Ninja, .NET SDK 10
+e Python 3.12+. Use um Developer PowerShell/Prompt **x64**.
 
 ```powershell
-dotnet run --project tests/tray/TaskbarStyler.Tray.Tests.csproj --configuration Release
-./tools/build-tray.ps1
-./out/tray/TaskbarStyler.Tray.exe
+git clone https://github.com/diogonevesofc/taskbar-styler.git
+cd taskbar-styler
+git checkout v0.1.0-beta.1
+
+cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+cmake --build build-release
+ctest --test-dir build-release --output-on-failure
+
+$env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'
+$env:DOTNET_GENERATE_ASPNET_CERTIFICATE = 'false'
+$env:DOTNET_SKIP_FIRST_TIME_EXPERIENCE = '1'
+dotnet run --project tests/tray/TaskbarStyler.Tray.Tests.csproj -c Release
+./tools/build-tray.ps1 -NativeDirectory build-release/src/cli -OutputDirectory out/release/app -SelfContained
 ```
 
-O pacote em `out/tray` pode ser copiado inteiro para outra pasta. Ele exige
-o **.NET Desktop Runtime 10 x64** instalado e contém DLL, temas e créditos.
-Não há instalador, autostart nem atualização automática.
+Para gerar o instalador, tenha o **Inno Setup 6.7.1** e execute:
 
-Ao abrir o aplicativo, a janela mostra os temas disponíveis. Busque por nome ou
-autor, selecione um tema e compare a prévia nos fundos claro e escuro. Só o
-botão **Aplicar tema** altera a barra; **Restaurar padrão** desativa o tema.
-A prévia é uma ilustração offline derivada dos JSONs: simplifica efeitos e
-geometria, não é uma captura nem uma reprodução exata da sua taskbar. Alternar
-o fundo da prévia não altera o modo claro/escuro do Windows.
-
-O menu permite abrir a prévia de um tema, desativar, tentar novamente após falha,
-exportar uma árvore nova, abrir diagnóstico/log e reiniciar o Explorer.
-`Desativar e sair` envia reset antes de encerrar a bandeja. `Ativo` informa
-pedido aceito; falhas de regras e a última contagem observada ficam no
-diagnóstico. Nenhuma carga falha é repetida pelo poll de segurança.
-Fechar a janela mantém o aplicativo na bandeja. Executar o programa novamente
-ou clicar no ícone abre o catálogo da mesma instância. `Diagnóstico` reúne os
-detalhes técnicos; seu botão `Ferramentas` dá acesso aos comandos avançados.
-Uma exportação parcial preserva a última árvore válida; sem arquivo novo em
-15 s, a janela de diagnóstico informa a falha e indica o log do TAP.
-
-## Vendo a árvore visual
-
-```
-taskbar-styler load
+```powershell
+./tools/build-installer.ps1 -PackageDirectory out/release/app -OutputDirectory out/release
 ```
 
-Escreve `%LOCALAPPDATA%\TaskbarStyler\visual-tree.txt` com a árvore da sua
-taskbar, no mesmo formato dos seletores dos temas. É com isso que você conserta
-um tema sozinho quando uma atualização do Windows renomeia algum elemento.
+O [workflow de release](.github/workflows/release.yml) registra o processo de
+build e verificação. Dependências são obtidas durante o build; o aplicativo
+distribuído funciona offline. Não distribua o TAP de um build Debug.
 
-## Uso
+## Contribuir
 
-```
-taskbar-styler load               carrega o TAP no explorer.exe
-taskbar-styler apply <ThemeId>    aplica um tema (ao vivo, se o TAP ja estiver carregado)
-taskbar-styler reset              desfaz o tema aplicado (ao vivo)
-taskbar-styler list               lista os temas disponiveis
-taskbar-styler status             mostra o estado (TAP carregado, tema configurado, composition diagnostics)
-taskbar-styler setup              grava DisableCompositionDiag=1 (precisa de administrador)
-```
+Issues e contribuições são bem-vindas. Veja [CONTRIBUTING.md](CONTRIBUTING.md)
+para reproduzir problemas, executar testes e propor mudanças pequenas.
 
-`apply` e `reset` escrevem `%APPDATA%\TaskbarStyler\config.json` e sinalizam
-um Event nomeado; se o TAP já estiver carregado no `explorer.exe`, o tema
-troca ao vivo, sem passar por `load` de novo. **Trocar de tema não reinicia o
-Explorer; descarregar o TAP, sim (spec §6.4).**
+## Licença e créditos
 
-`WindhawkBlur` vira blur de composição real (grafo de efeitos D2D sobre o
-backdrop da janela, com `BlurAmount`, saturação, luminosidade e ruído); o
-`AcrylicBrush` é o fallback quando a composição não está disponível — o log de
-`apply …` conta `blur brushes` e `blur fallbacks`.
+Distribuição gratuita sob **GNU GPL v3.0**. Você pode usar, estudar, modificar e
+redistribuir conforme a [licença](LICENSE), mantendo suas condições.
 
-Capturas `Prop=>Var` e valores `{{…}}` são resolvidos por elemento e acompanham
-mudanças das propriedades capturadas. O log de `theme …` informa quantas
-capturas e valores dinâmicos o tema usa; uma variável indisponível deixa o
-estilo pendente até que possa ser resolvido.
+Obra derivada de [Windows 11 Taskbar Styler](https://github.com/ramensoftware/windhawk-mods/blob/main/mods/windows-11-taskbar-styler.wh.cpp),
+de **m417z**, com temas contribuídos pela comunidade. Os JSONs foram extraídos
+das tabelas desse mod. Créditos: [THEMES.md](THEMES.md) e [NOTICE](NOTICE).
 
-## Temas
-
-Ficam em [`themes/`](themes/), um arquivo JSON por tema, editáveis sem
-recompilar. Os créditos estão em [THEMES.md](THEMES.md).
-
-## Licença
-
-GPL-3.0. Veja [LICENSE](LICENSE) e [NOTICE](NOTICE).
+As dependências mantêm suas próprias licenças; veja
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Este é um projeto independente,
+sem afiliação com a Microsoft ou o Windhawk.

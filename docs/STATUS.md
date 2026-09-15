@@ -16,14 +16,39 @@ como o trabalho é organizado).
 | 3b | Fidelidade: blur real, variáveis de estilo, reciclagem, timeout no fan-out | concluído; gate operacional encerrado; integração local por fast-forward |
 | 4 | App de bandeja em C# .NET 10, sempre ligado, sobrevive a restart do explorer | concluído e revisado; integração local por fast-forward |
 | 5 | Catálogo visual com busca e prévia antes de aplicar | concluído e revisado; integração local por fast-forward |
+| 6 | Distribuição gratuita, instalador, fontes e README público | pacote Release validado localmente; instalador e publicação em validação no CI |
 
-`origin/main` permanece em `be0d3e6` e `origin/plano-3b-fidelidade` em
+No fechamento local anterior, `origin/main` estava em `be0d3e6` e `origin/plano-3b-fidelidade` em
 `0db9622`. A entrega local do Plano 3b inclui correções em `27ff1a8`,
 documentação em `c2a3607`, correção do reset entre threads em `bfe330d` e o
 registro final do gate. A integração em `main` usa fast-forward do branch
 `plano-3b-fidelidade`, sem commit direto em `main` nem push.
 
-## Plano 5 — entrega atual
+## Plano 6 — entrega atual
+
+Publicação explicitamente autorizada pelo dono: código e instalador gratuitos
+no GitHub. Versão `0.1.0-beta.1`, Windows 11 x64, pacote self-contained com .NET
+10.0.12; CLI/TAP em Release com CRT estático. Licenças/avisos incluídos. A obra
+combinada é GPL-3.0-only conforme o upstream; avisos originais preservados.
+
+Validação local: CTest core/TAP verdes, 58 testes C#, 22 testes Python e 55 temas
+reconstruídos byte a byte. Imports nativos sem CRT de Debug ou redistribuível
+global. Pacote sem configuração pessoal, logs, dumps ou símbolos de Debug.
+
+Instalador Inno com UAC, consentimento para criar o pré-requisito ausente,
+arquivos por versão, atalho e desinstalador. Sem autostart ou reinício forçado.
+O workflow compila e testa instalação/desinstalação em variante exclusiva do
+CI, porque os runners são Windows Server; o instalador público rejeita Server.
+Fonte via `git archive HEAD`, commit no pacote e SHA256SUMS vinculam a entrega.
+
+O CI, o smoke do artefato final e a publicação são as verificações restantes
+neste checkpoint. A release registra os resultados finais e o commit exato;
+não publicar artefatos de um workflow que falhou. Instalador sem assinatura
+digital. Matriz de hardware e observação de 24 h continuam pendentes.
+
+Plano: [distribuição](superpowers/plans/2026-09-15-plano-6-distribuicao.md).
+
+## Plano 5 — histórico da entrega
 
 Janela de personalização com busca por nome/autor, catálogo de 54 temas,
 prévia offline e botões explícitos de aplicar/restaurar. A seleção e o fundo
